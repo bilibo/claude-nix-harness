@@ -8,7 +8,7 @@ parentheses refer to sections of the original build brief.
 - NixOS module: managed settings, hook, sandbox, mod policy, directory
   scoping, per-host options (5.2)
 - home-manager module: direnv, tmux, `ccmux` (5.1, without the broker signal)
-- devenv module: generated project settings, host check, optional image (new)
+- devenv module: generated project settings, host check
 - Hook unit tests (154 cases, 180 with enforcement roots), the generated
   repo settings file and ccmux resolver tests, run by `nix flake check`
   (part of 5.6)
@@ -28,6 +28,10 @@ parentheses refer to sections of the original build brief.
 The tier, read-fence, customer-module and `ccmux` subcommand work is
 phased in `docs/handoff-tiers.md`; this list keeps the overall order.
 
+0. **Bootstrap for any Linux** (decided 2026-10-19, not yet designed): an
+   install script that puts Nix, devenv and direnv on the host and the
+   managed tree at /etc/claude-code, so a non-NixOS machine gets the
+   managed-host tier with one command. The WSL tier builds on it too.
 1. **Verify the repo-only shape live.** On an unmanaged host: `direnv
    reload` in a harness repo, accept the trust dialog once, run the live
    checks in the runbook. First time a real session runs on the repo file
@@ -85,11 +89,10 @@ phased in `docs/handoff-tiers.md`; this list keeps the overall order.
   settings can disable it outright.
 - nix-darwin module: same `lib/`, managed settings under
   `/Library/Application Support/ClaudeCode/`, seatbelt sandbox keys.
-- Running the `harness.container.enable` image (it builds today) for a
-  project that must not touch the host at all: podman needs
-  `--security-opt unmask=/proc/*` so bubblewrap works inside, and
-  `--userns=keep-id` plus the user-level podman socket when launched from
-  `vscode-fhs`.
+- Container route: built and set aside in the claude-nix-harness-container
+  repo (same `lib/`, root-owned store behind a nix-daemon, devcontainer
+  files per engine; never run under podman or VS Code). The WSL tier does
+  not use it; NixOS-WSL builds its distro tarball from the NixOS module.
 - A parser-based second guard (cc-safety-net rulebooks) beside the regex
   hook (7.6).
 - A `wsl/` or nix-darwin module alongside `nixos/`, consuming the same

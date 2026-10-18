@@ -13,11 +13,11 @@ harness on an unmanaged host; the managed layer adds what only it can
 | Unmanaged host | no harness modules; harness repos import `harness/devenv` and carry their own rules | in use |
 | Mixed host | NixOS module with `enforcementRoots = [ "~/code/git" ]`: managed rules only under the roots, sessions elsewhere keep `git commit` and friends | available, superseded by the unmanaged shape |
 | macOS (nix-darwin) | managed settings under `/Library/Application Support/ClaudeCode/` | not started |
+| Any Linux with Nix bootstrapped | install script puts Nix, devenv and the managed tree on the host; same rules as a managed host | next (docs/roadmap.md) |
 
-Containers as the main route were tried and dropped (podman inside
-vscode-fhs, double sandbox, no gain over the brief's threat model).
-`devenv/` is the project side instead: every repo imports it, and a
-per-project image stays available as an opt-in.
+`devenv/` is the project side: every repo imports it. A container route
+was built and set aside; it lives in the claude-nix-harness-container repo,
+whose README has what works and what was never verified.
 
 Operating it: `docs/runbook.md`. What is next: `docs/roadmap.md`.
 
@@ -28,7 +28,7 @@ lib/        pure Nix: deny rules (universal + project), settings.nix (one body f
 hooks/      env-guard.sh (the guard hook), tmux-notify.sh
 nixos/      NixOS module: harness.* -> /etc/claude-code
 home/       home-manager module: devenv, direnv, tmux, programs.claude-code, `ccmux`
-devenv/     devenv module (devenv/devenv.nix) every repo imports: generates .claude/settings.json with deny rules, hooks and sandbox; `ccmux`; optional image
+devenv/     devenv module (devenv/devenv.nix) every repo imports: generates .claude/settings.json with deny rules, hooks and sandbox; `ccmux`
 pkgs/       ccmux launcher (also installed as `ccode`, the former name), direnv >= 2.38 override
 tests/      hook-test.sh (env-guard.sh unit tests), project-settings-test.sh (the generated repo file), ccmux-test.sh
 docs/       runbook (daily flow, onboarding, verification, troubleshooting), roadmap

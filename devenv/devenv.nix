@@ -105,15 +105,6 @@ in
       description = "Where a managed host keeps the managed settings; checked at shell entry when HARNESS_EXPECT_MANAGED is set.";
     };
 
-    container = {
-      enable = lib.mkEnableOption "a per-project container image with the managed tree baked in";
-      name = lib.mkOption {
-        type = lib.types.str;
-        default = "claude-nix-harness-${projectName}";
-        defaultText = lib.literalExpression ''"claude-nix-harness-''${config.name}"'';
-        description = "Image name for `devenv container build harness`.";
-      };
-    };
   };
 
   config = lib.mkMerge [
@@ -153,27 +144,5 @@ in
         unset _harness_root
       '';
     }
-
-    (lib.mkIf cfg.container.enable {
-      packages = [
-        pkgs.claude-code
-        pkgs.jq
-        pkgs.tmux
-        pkgs.git
-      ];
-      containers.harness = {
-        name = cfg.container.name;
-        copyToRoot = pkgs.runCommand "claude-nix-harness-root" { } ''
-          mkdir -p $out/etc
-          ln -s ${
-            import ../lib/managed-tree.nix {
-              inherit pkgs lib direnvPackage;
-              inherit (cfg) allowLocalCommits allowMemoryEdits platform;
-            }
-          } $out/etc/claude-code
-        '';
-        startupCommand = "bash -l";
-      };
-    })
   ];
 }
