@@ -70,6 +70,7 @@ let
       "doas"
       "su"
       "pkexec"
+      "run0"
       "nix profile"
       "nix-env"
       "nixos-rebuild"
@@ -82,7 +83,8 @@ let
       "cmd.exe"
     ]
     ++ [
-      "Bash(*.exe*)"
+      "Bash(*.exe)"
+      "Bash(*.exe *)"
       "Bash(powershell*)"
       "Bash(pwsh*)"
     ];
@@ -119,11 +121,19 @@ let
     else
       [ "Edit(~/.claude/**)" ];
 
+  # Files that run code at the user's next shell, git or tmux start, outside
+  # the sandbox. `~/.config/**` matches the sandbox's denyWrite of ~/.config.
   userConfig = claudeHome ++ [
     "Edit(~/.bashrc)"
+    "Edit(~/.bash_profile)"
     "Edit(~/.profile)"
-    "Edit(~/.config/nix/**)"
-    "Edit(~/.config/direnv/**)"
+    "Edit(~/.zshrc)"
+    "Edit(~/.zprofile)"
+    "Edit(~/.zshenv)"
+    "Edit(~/.gitconfig)"
+    "Edit(~/.tmux.conf)"
+    "Edit(~/.ssh/**)"
+    "Edit(~/.config/**)"
   ];
 
   # ------------------------------------------------------------------ project

@@ -1,7 +1,8 @@
 # ccmux [-n] [<customer>/<repo> | <path>] [claude args...]
 # Starts or attaches the project's tmux session and runs claude in a window.
 # HARNESS_PROJECT is exported by the harness devenv shell, so inside a repo
-# (or its worktree) the project argument is optional. `-n` prints the
+# (or its worktree) the project argument is optional; for a clone outside the
+# code root the shell also exports HARNESS_PROJECT_DIR. `-n` prints the
 # resolution and exits, for tests/ccmux-test.sh. `ccode` is the former name
 # and stays as a second entry point in bin/.
 {
@@ -13,9 +14,11 @@ let
     name = "ccmux";
     runtimeInputs = [ pkgs.tmux ];
     text = ''
-      root="''${HARNESS_CODE_ROOT:-${codeRoot}}"; root="''${root%/}"
       usage() { echo "usage: ccmux [<customer>/<repo> | <path>] [claude args]  (inside a repo under $root, the project is optional)" >&2; exit 64; }
       die() { echo "ccmux: $*" >&2; exit 66; }
+      # Physical path, like the `pwd -P` in resolve, so a symlinked root still matches.
+      root="''${HARNESS_CODE_ROOT:-${codeRoot}}"
+      root=$(cd "$root" 2>/dev/null && pwd -P) || die "no such directory: $root"
 
       # resolve <dir>: the <customer>/<repo> containing <dir>, or die.
       resolve() {
@@ -33,8 +36,8 @@ let
 
       if [ $# -ge 1 ] && [[ "$1" != -* ]]; then
         arg="$1"; shift
-        if [[ "$arg" == */* && "$arg" != /* && "$arg" != .* && -d "$root/$arg" ]]; then
-          project="$arg"
+        if [[ "$arg" != /* && "$arg" != .* && -d "$root/$arg" ]]; then
+          project=$(resolve "$root/$arg")
         elif [ -d "$arg" ]; then
           project=$(resolve "$arg")
         else
@@ -48,7 +51,11 @@ let
         usage
       fi
 
-      repo="$root/$project"
+      if [ -n "''${HARNESS_PROJECT_DIR:-}" ] && [ "$project" = "''${HARNESS_PROJECT:-}" ]; then
+        repo="$HARNESS_PROJECT_DIR"
+      else
+        repo="$root/$project"
+      fi
       [ -d "$repo" ] || die "no such repo: $repo"
       session="''${project//\//-}"
 

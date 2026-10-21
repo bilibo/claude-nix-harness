@@ -72,7 +72,7 @@ Nix daemon). `bubblewrap` and `socat` come from the host's system packages.
 **devenv-base.** Does not exist. There is one devenv module,
 `devenv/devenv.nix`, imported as `harness/devenv`. It exports options `harness.*`
 (allowLocalCommits, allowMemoryEdits, platform, extraDeny,
-extraAllowedDomains, settings, managedSettingsPath, container), writes the
+extraAllowedDomains, settings, managedSettingsPath, claudeCode.enable), writes the
 settings file, ships `ccmux` in the shell, exports `HARNESS_PROJECT`. No
 repo sets `AZURE_CONFIG_DIR`. The only repos under `~/code/git` are
 `raul/claude-nix-harness` and `raul/azfn-rust-handler`; the latter's

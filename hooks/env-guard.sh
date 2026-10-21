@@ -6,7 +6,7 @@
 #
 # Fail closed: any unexpected error exits 2, which blocks on PreToolUse and
 # ConfigChange (together with onFailure = "block" in the hook registration).
-# Needs Claude Code >= 2.1.295. lib/hooks.nix puts jq, direnv and
+# Needs Claude Code >= 2.1.295. lib/hooks.nix puts jq, direnv, sed and
 # coreutils from the store first on PATH, so the guard never runs the
 # user's copies of them.
 #
@@ -47,9 +47,10 @@ if [ -n "$ENFORCEMENT_ROOTS" ] && [ -n "$cwd" ]; then
     return 1
   }
   mentions_root() { # mentions_root <normalised command text>
-    local t="$1" r
+    local t="$1" r rl
     for r in "${roots[@]}"; do
-      [[ "$t" == *"${r,,}"* || "$t" == *"~${r#"$HOME"}"* ]] && return 0
+      rl="${r,,}"
+      [[ "$t" == *"$rl"* || "$t" == *"~${rl#"${HOME,,}"}"* ]] && return 0
     done
     return 1
   }
@@ -96,17 +97,25 @@ ENV
     case "$tool" in
       Edit|Write|NotebookEdit|MultiEdit)
         f=$(jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' <<<"$input")
+        # The patterns below are literal: make the path absolute and fold `.`
+        # and `..` first. `-s` keeps symlinks, so a home-manager ~/.bashrc (a
+        # link into the store) still matches its own name.
+        [[ "$f" == /* ]] || f="$cwd/$f"
+        f=$(realpath -sm -- "$f")
         [ "$in_scope" = 1 ] || { under_root "$f" && in_scope=1; }
-        # The one carve-out under ~/.claude is auto-memory, when the host
-        # allows it; the path must be literal (no `..`) so it cannot reach a
-        # sibling directory.
-        if [ "$ALLOW_MEMORY_EDITS" = 1 ] && [[ "$f" != *"/../"* && "$f" != *"/.." ]]; then
+        # The one carve-out under ~/.claude is auto-memory, when the host allows it.
+        if [ "$ALLOW_MEMORY_EDITS" = 1 ]; then
           case "$f" in
             "$HOME"/.claude/projects/*/memory/*) exit 0 ;;
           esac
         fi
+        # The user's own Claude and Nix config, and every file that runs code
+        # at their next shell, git or tmux start, outside the sandbox.
         case "$f" in
-          "$HOME"/.claude/*|"$HOME"/.claude.json|"$HOME"/.bashrc|"$HOME"/.profile|"$HOME"/.config/nix/*|"$HOME"/.config/direnv/*)
+          "$HOME"/.claude/*|"$HOME"/.claude.json|"$HOME"/.config/*|"$HOME"/.ssh/*|\
+          "$HOME"/.bashrc|"$HOME"/.bash_profile|"$HOME"/.bash_login|"$HOME"/.profile|\
+          "$HOME"/.zshrc|"$HOME"/.zprofile|"$HOME"/.zshenv|"$HOME"/.zlogin|\
+          "$HOME"/.gitconfig|"$HOME"/.tmux.conf)
             deny "edit of $f is forbidden (user config)" ;;
         esac
         if [ "$in_scope" = 1 ]; then
@@ -133,7 +142,8 @@ ENV
         if [ "$in_scope" = 1 ]; then
         git_ops='push|reset|rebase|merge|cherry-pick|revert|am|filter-branch|filter-repo|reflog +(expire|delete)|branch +-[dm]|tag +-d|stash +(drop|clear|pop)|checkout +--|restore|clean|gc|prune|update-ref|symbolic-ref|notes|commit-tree'
         [ "$ALLOW_LOCAL_COMMITS" = 1 ] || git_ops="commit|$git_ops"
-        re="(^|[^a-z0-9_./-])git( +-[-a-z]+( +[^ ]+)?)* +($git_ops)$e"
+        # `/usr/bin/git`, `git -C . push`, `git --git-dir=.git push`.
+        re="(^|[^a-z0-9_.-])git( +-[-a-z]+(=[^ ]*| +[^ ]+)?)* +($git_ops)$e"
         [[ "$n" =~ $re ]] && deny "git history/index write blocked"
         re='git_dir=|git_work_tree=|git_index_file=|git_config_global=|git_config_system='
         [[ "$n" =~ $re ]] && deny "git env redirect blocked"
@@ -155,13 +165,13 @@ ENV
         re='(^|[^a-z])az +(login|logout|account +(set|clear|get-access-token)|ad +sp +credential|keyvault +(secret|key|certificate) +(show|download|list|backup))'
         [[ "$n" =~ $re ]] && deny "credential operation blocked"
         cred_files='(\.env([^a-z0-9]|$)|\.tfvars|\.tfstate|\.azure/|\.terraform\.d/|credentials\.json|\.claude\.json|\.credentials|/\.ssh/|id_(rsa|ed25519)|\.netrc|\.npmrc|\.pypirc)'
-        readers="$b(cat|less|more|head|tail|sed|awk|cut|strings|od|xxd|base64|grep|rg|jq|yq|cp|mv|scp|rsync|curl|wget|python3?|node|source|\.)$e"
+        readers="$b(cat|less|more|head|tail|sed|awk|cut|strings|od|xxd|base64|grep|rg|jq|yq|diff|cmp|sort|uniq|paste|tar|zip|bat|vim?|nano|view|cp|mv|scp|rsync|curl|wget|python3?|node|source|\.)$e"
         if [[ "$n" =~ $cred_files ]] && [[ "$n" =~ $readers ]]; then
           deny "credential file access blocked"
         fi
 
         # 4. system and config (universal)
-        re="(^|[^a-z])(sudo|doas|pkexec|su)$e"
+        re="(^|[^a-z])(sudo|doas|pkexec|su|run0)$e"
         [[ "$n" =~ $re ]] && deny "privilege escalation blocked"
         re='(^|[^a-z])(nix +(profile|upgrade-nix|registry|store +(gc|delete|optimise))|nix-env|nix-collect-garbage|nixos-rebuild|nix-channel|home-manager +switch|systemctl|journalctl +--vacuum|wsl\.exe|wslconfig)'
         [[ "$n" =~ $re ]] && deny "system change blocked"
@@ -170,8 +180,11 @@ ENV
         # Shell-side writes to the files the Edit tool may not touch (project rule).
         if [ "$in_scope" = 1 ]; then
         config_files='(devenv\.(nix|yaml|lock|local)|\.envrc|\.claude/|\.claude-plugin|\.git/hooks|\.git/config|\.config/nix|\.config/direnv)'
-        writers="((^|[^0-9&<])>|$b(tee|mv|cp|rm|ln|install|truncate|chmod|chattr|patch|dd)$e|sed +-[a-z]*i|perl +-[a-z]*i)"
-        if [[ "$n" =~ $config_files ]] && [[ "$n" =~ $writers ]]; then
+        # `2>/dev/null`, `>&2` and friends write no file; every `>` left after
+        # dropping them does (`1>`, `2>`, `&>`, `>>` included).
+        w=$(printf '%s' "$n" | sed -E 's#[0-9]*>&[0-9]+##g; s#[0-9]*>/dev/null##g')
+        writers="(&?>|$b(tee|mv|cp|rm|ln|install|truncate|chmod|chattr|patch|dd)$e|sed +-[a-z]*i|perl +-[a-z]*i)"
+        if [[ "$n" =~ $config_files ]] && [[ "$w" =~ $writers ]]; then
           deny "shell write to config file blocked"
         fi
         fi

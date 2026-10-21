@@ -28,11 +28,7 @@ in
 
     direnvPackage = lib.mkOption {
       type = lib.types.package;
-      default =
-        if lib.versionOlder pkgs.direnv.version "2.38" then
-          import ../pkgs/direnv.nix { inherit pkgs; }
-        else
-          pkgs.direnv;
+      default = import ../pkgs/direnv.nix { inherit pkgs; };
       defaultText = lib.literalExpression "pkgs.direnv (>= 2.38, overridden while nixpkgs is older)";
       description = "direnv >= 2.38 for `require_allowed` in .envrc files.";
     };
@@ -48,35 +44,13 @@ in
       enable = true;
       package = cfg.direnvPackage;
       nix-direnv.enable = true;
-      config.global = {
-        strict_env = true;
-        # devenv evaluations are slow; the default 5s warning is noise.
-        warn_timeout = "2m";
-        # .env files hold credentials.
-        load_dotenv = false;
-        # No whitelist.prefix entries, ever: path-only, never re-prompts.
-      };
+      # Shared with install.sh, so a bootstrapped host gets the same settings.
+      config.global = (builtins.fromTOML (builtins.readFile ../pkgs/direnv.toml)).global;
     };
 
     programs.tmux = {
       enable = true;
-      extraConfig = ''
-        # --- claude-nix-harness ---
-        # The tmux server keeps the first client's environment. Refresh these
-        # on attach and never seed them into new panes, so a pane opened from
-        # customer A's shell never carries A's direnv state into customer B.
-        set -ga update-environment "DIRENV_DIR DIRENV_DIFF DIRENV_WATCHES DIRENV_FILE"
-        set-environment -gu DIRENV_DIR
-        set-environment -gu DIRENV_DIFF
-        set-environment -gu DIRENV_WATCHES
-        set-environment -gu DIRENV_FILE
-        # Claude Code's TUI: shift+enter and other chords need extended keys,
-        # focus events keep its redraws right, passthrough lets it talk to the
-        # outer terminal (clipboard, images).
-        set -g extended-keys on
-        set -g focus-events on
-        set -g allow-passthrough on
-      '';
+      extraConfig = builtins.readFile ../pkgs/tmux.conf;
     };
 
     home.packages = [

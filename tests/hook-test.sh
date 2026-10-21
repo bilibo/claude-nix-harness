@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#   hook-test.sh <path-to-env-guard.sh>
+#   hook-test.sh <path-to-env-guard.sh> [--direnv-stub]
 #
 # Feeds hook JSON on stdin, no Claude Code needed (0 = allow, 2 = block).
 # Add a case per hard limit you rely on; a case that stops passing after a
@@ -51,6 +51,9 @@ block 'timeout 10 git merge main'
 block 'git push || true'
 block 'echo hi; git push'
 block 'direnv exec . git push'
+block 'git --git-dir=.git push origin main'
+block 'git --work-tree=. reset --hard'
+block '/usr/bin/git push origin main'
 
 # --- 2. cloud / infra -----------------------------------------------------
 allow 'terraform plan -out tf.plan'
@@ -96,6 +99,8 @@ block 'python3 -c "print(open(\".env\").read())"'
 block 'source .env'
 block 'grep -r token ~/.azure/'
 block 'base64 .env'
+block 'diff /dev/null .env'
+block 'sort terraform.tfvars'
 
 # --- 4. system / config ---------------------------------------------------
 allow 'nix build .#foo'
@@ -103,6 +108,7 @@ allow 'nix flake check'
 allow 'nix develop -c true'
 block 'sudo ls'
 block 'echo x | sudo tee /etc/foo'
+block 'run0 ls'
 block 'nix profile install nixpkgs#hello'
 block 'nix-env -iA nixpkgs.hello'
 block 'nixos-rebuild switch'
@@ -120,7 +126,11 @@ block 'sed -i s/a/b/ devenv.yaml'
 block 'cp evil.json .claude/settings.json'
 block 'rm -rf .claude/'
 block 'ln -s /tmp/x .git/hooks/pre-commit'
+block 'echo x 1> devenv.nix'
+block 'echo x &> devenv.nix'
+block 'true 2> devenv.nix'
 allow 'ls .claude/ 2>/dev/null'
+allow 'cat devenv.nix >/dev/null 2>&1'
 allow 'cat devenv.nix'
 allow 'git diff devenv.nix'
 
@@ -172,6 +182,15 @@ run 2 "$(edit_file $IN/.claude/skills/x/.claude-plugin/plugin.json)"
 run 2 "$(edit_file "$HOME/.claude/settings.json")"
 run 2 "$(edit_file "$HOME/.claude.json")"
 run 2 "$(edit_file "$HOME/.bashrc")"
+# Files that run code at the user's next shell, git or tmux start.
+run 2 "$(edit_file "$HOME/.zshrc")"
+run 2 "$(edit_file "$HOME/.gitconfig")"
+run 2 "$(edit_file "$HOME/.config/tmux/harness.conf")"
+run 2 "$(edit_file "$HOME/.ssh/authorized_keys")"
+# `..` and relative paths are resolved before matching.
+run 2 "$(edit_file "$HOME/code/../.bashrc")"
+run 2 "$(edit_file devenv.nix)"
+run 0 "$(edit_file main.tf)"
 # Auto-memory lives under ~/.claude/projects/<slug>/memory/. Allowed only when
 # the host was built with allowMemoryEdits; nothing else under ~/.claude ever.
 MEM=$(sed -n 's/^ALLOW_MEMORY_EDITS="\(.*\)"$/\1/p' "$hook")
@@ -220,13 +239,21 @@ run 2 "{\"hook_event_name\":\"ConfigChange\",\"source\":\"user_settings\",\"cwd\
 # A session outside the roots that reaches into a repo under them.
 block "git -C $IN push"
 block "cd $IN && terraform apply"
-block "bash -c 'cd ~/code/git/acme/infra && git commit -m x'"
+block "bash -c 'cd ~${IN#"$HOME"} && git commit -m x'"
 run 2 "$(edit_file "$IN/devenv.nix")"
 run 2 "$(edit_file "$IN/.envrc")"
+run 2 "$(edit_file "/x/..$IN/devenv.nix")"
 # Unknown cwd fails closed.
 run 2 '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git push"}}'
 cwd="$IN"
 fi
+
+# --- Roots with capitals: the `~` form of a path under them still counts ---
+upper=$(mktemp); sed 's|^ENFORCEMENT_ROOTS=.*|ENFORCEMENT_ROOTS="~/Code"|' "$hook" > "$upper"; chmod +x "$upper"
+hook_main="$hook"; hook="$upper"; cwd="$OUT"
+block 'git -C ~/Code/x push origin main'
+allow 'git -C ~/elsewhere/x push origin main'
+hook="$hook_main"; cwd="$IN"; rm -f "$upper"
 
 # --- ConfigChange ---------------------------------------------------------
 run 2 '{"hook_event_name":"ConfigChange","source":"user_settings"}'
@@ -249,6 +276,27 @@ run 0 "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Read\",\"cwd\":\"$IN\
 run 0 '{"hook_event_name":"Stop"}'
 # Garbage input must deny, not allow.
 run 2 'not json at all'
+
+# --- Worktree .envrc auto-allow: needs the hook built with the stub direnv ---
+# (flake check hook-test-worktree). The stub logs its calls to DIRENV_STUB_LOG
+# and answers `status` with DIRENV_STUB_STATUS.
+if [ "${2:-}" = --direnv-stub ]; then
+  wt=$(mktemp -d); main="$wt/main"; w="$main/.claude/worktrees/wt1"; mkdir -p "$w"
+  echo 'use devenv' > "$main/.envrc"; cp "$main/.envrc" "$w/.envrc"
+  export DIRENV_STUB_LOG="$wt/calls"
+  allowed_main='{"state":{"foundRC":{"path":"'"$main/.envrc"'","allowed":0}}}'
+  worktree_session() { # worktree_session <want 0|1 = ran direnv allow> <description> <status json>
+    : > "$DIRENV_STUB_LOG"
+    CLAUDE_ENV_FILE="$wt/env" DIRENV_STUB_STATUS="$3" "$hook" <<<"{\"hook_event_name\":\"SessionStart\",\"cwd\":\"$w\"}" >/dev/null 2>&1
+    local got=0; grep -q '^direnv allow' "$DIRENV_STUB_LOG" && got=1
+    if [ "$got" = "$1" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL: worktree .envrc $2"; fi
+  }
+  worktree_session 1 "identical to an allowed main .envrc: allowed" "$allowed_main"
+  worktree_session 0 "with the main .envrc not allowed: left alone" "${allowed_main/allowed\":0/allowed\":1}"
+  echo '# changed' >> "$w/.envrc"
+  worktree_session 0 "that differs from main: left alone" "$allowed_main"
+  rm -rf "$wt"
+fi
 
 echo "hook-test: $pass passed, $fail failed"
 [ "$fail" = 0 ]

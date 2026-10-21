@@ -1,0 +1,10 @@
+# direnv's global config on a harness host: the home module reads it on
+# NixOS, install.sh copies it to ~/.config/direnv/direnv.toml elsewhere.
+[global]
+strict_env = true
+# devenv evaluations are slow; the default 5s warning is noise.
+warn_timeout = "2m"
+# .env files hold credentials.
+load_dotenv = false
+# Never a prefix-based allow list here: it would approve every .envrc under
+# the prefix, so a changed one would never re-prompt.

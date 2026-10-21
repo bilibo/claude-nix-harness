@@ -99,6 +99,8 @@ in
       '';
     };
 
+    claudeCode.enable = lib.mkEnableOption "claude-code, tmux and jq in the project shell, for hosts where no home module installs them; needs `allow_unfree: true` in devenv.yaml";
+
     managedSettingsPath = lib.mkOption {
       type = lib.types.str;
       default = "/etc/claude-code/managed-settings.json";
@@ -122,7 +124,14 @@ in
 
       # `ccmux` in the project shell only; the home module adds it host-wide
       # on managed hosts.
-      packages = [ ccmux ];
+      packages = [
+        ccmux
+      ]
+      ++ lib.optionals cfg.claudeCode.enable [
+        pkgs.claude-code
+        pkgs.tmux
+        pkgs.jq # install.sh's self-check reads the generated settings with it
+      ];
 
       enterShell = ''
         # The harness home module exports HARNESS_EXPECT_MANAGED on hosts that
@@ -132,14 +141,18 @@ in
           echo "harness: ${cfg.managedSettingsPath} is missing: repo rules only, no mod policy on this host" >&2
         fi
         # Name this project for `ccmux`: <customer>/<repo> relative to the code
-        # root, from the main checkout or any worktree under it. A bare `ccmux`
-        # in this shell then opens the right tmux session.
+        # root, from the main checkout or any worktree under it, else
+        # local/<name> with the directory alongside. A bare `ccmux` in this
+        # shell then opens the right tmux session.
         _harness_root="''${HARNESS_CODE_ROOT:-$HOME/code/git}"; _harness_root="''${_harness_root%/}"
         if [[ "$DEVENV_ROOT" == "$_harness_root/"*/* ]]; then
           _harness_rel="''${DEVENV_ROOT#"$_harness_root/"}"
           IFS=/ read -r _harness_a _harness_b _ <<<"$_harness_rel"
           export HARNESS_PROJECT="$_harness_a/$_harness_b"
-          unset _harness_rel _harness_a _harness_b
+          unset _harness_rel _harness_a _harness_b HARNESS_PROJECT_DIR
+        else
+          export HARNESS_PROJECT="local/${projectName}"
+          export HARNESS_PROJECT_DIR="$DEVENV_ROOT"
         fi
         unset _harness_root
       '';

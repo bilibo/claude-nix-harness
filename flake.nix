@@ -48,6 +48,9 @@
           );
           # bin/ccmux and bin/ccode (the former name).
           ccmux = import ./pkgs/ccmux.nix { inherit pkgs; };
+          # What install.sh puts in the user's profile on a host without Nix.
+          devenv = pkgs.devenv;
+          direnv = import ./pkgs/direnv.nix { inherit pkgs; };
           ccode = self.packages.${pkgs.stdenv.hostPlatform.system}.ccmux;
           default = self.packages.${pkgs.stdenv.hostPlatform.system}.managed;
         }
@@ -59,6 +62,17 @@
         let
           system = pkgs.stdenv.hostPlatform.system;
           p = self.packages.${system};
+          # The worktree .envrc auto-allow calls direnv; this stand-in logs the
+          # calls and answers `status` from an env var (hook-test.sh --direnv-stub).
+          direnvStub = pkgs.writeShellScriptBin "direnv" ''
+            echo "direnv $*" >> "''${DIRENV_STUB_LOG:-/dev/null}"
+            case "$1" in status) printf '%s' "''${DIRENV_STUB_STATUS:-}" ;; esac
+          '';
+          stubHooks = import ./lib/hooks.nix {
+            inherit pkgs;
+            inherit (pkgs) lib;
+            direnvPackage = direnvStub;
+          };
           test =
             name: script: args:
             pkgs.runCommand name
@@ -76,9 +90,12 @@
         {
           hook-test = test "hook-test" ./tests/hook-test.sh "${p.managed}/hooks/env-guard.sh";
           hook-test-scoped = test "hook-test-scoped" ./tests/hook-test.sh "${p.managed-scoped}/hooks/env-guard.sh";
+          hook-test-worktree = test "hook-test-worktree" ./tests/hook-test.sh "${stubHooks}/env-guard.sh --direnv-stub";
           project-settings-test = test "project-settings-test" ./tests/project-settings-test.sh "${p.project-settings}";
           ccmux-test = test "ccmux-test" ./tests/ccmux-test.sh "${p.ccmux}/bin/ccmux";
           ccode-test = test "ccode-test" ./tests/ccmux-test.sh "${p.ccmux}/bin/ccode";
+          host-config-test = test "host-config-test" ./tests/host-config-test.sh "${./pkgs/direnv.toml} ${./pkgs/tmux.conf}";
+          install-test = test "install-test" ./tests/install-test.sh "${self}/install.sh";
         }
       );
     };

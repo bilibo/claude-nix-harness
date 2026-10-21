@@ -26,8 +26,11 @@ an installer that knows the four steps and the one kernel setting.
 
 - `git clone`, `./install.sh`, done. One script, run once, interactive
   where sudo is needed, idempotent enough to re-run after a failure.
-- Nix from the Determinate installer: multi-user daemon, flakes on,
-  survives OS upgrades, has an uninstaller.
+- Nix from the nix-installer at artifacts.nixos.org: multi-user daemon,
+  survives OS upgrades, has an uninstaller. (Found during review on
+  2026-10-19: that URL now serves the NixOS community fork, which installs
+  upstream Nix with flakes off; the script passes the experimental-features
+  flags itself.)
 - The repo-only tier exactly as it works on an unmanaged host today.
 - Claude Code pinned by the project: it comes from the devenv shell, with
   tmux for `ccmux`, not from a host install.
@@ -120,9 +123,8 @@ Claude's calls, open to correction:
   `trusted-users` edit and no cachix trust are needed and nix.conf is never
   touched. devenv's own `latest` flake would need the person to be a
   trusted user or build devenv from source.
-- The Nix installer is run as it ships, which today installs Determinate
-  Nix with determinate-nixd managing nix.conf; the uninstall line in the
-  summary is its `/nix/nix-installer uninstall`.
+- The Nix installer is run as it ships; the uninstall line in the summary
+  is its `/nix/nix-installer uninstall`, printed only when that file exists.
 - The script's steps, in order: preflight (curl, git, sudo, distro, user
   namespaces), Nix if missing, `nix profile` install of devenv (from
   cachix/devenv latest) and this flake's `packages.direnv`, direnv hook

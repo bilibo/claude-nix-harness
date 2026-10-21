@@ -76,7 +76,9 @@ By hand, or copy from a repo that already imports the module:
    `imports: - harness/devenv`. Use a git URL pinned by `devenv.lock`; the
    `path:` form is for developing the harness itself.
 2. `devenv.nix`: project tools, and `harness.settings` for project allow
-   rules.
+   rules. On a host without the home module (one set up by `install.sh`),
+   `harness.claudeCode.enable = true` here and `allow_unfree: true` in
+   devenv.yaml put Claude Code, tmux and jq in the shell.
 3. `.envrc`:
    ```
    eval "$(devenv direnvrc)"
@@ -88,8 +90,9 @@ By hand, or copy from a repo that already imports the module:
    `.claude/settings.local.json`, `.claude/worktrees/`.
    `.worktreeinclude`: `.claude/settings.json`, so a `--worktree` session
    starts with the repo's rules before devenv regenerates them there.
-5. `CLAUDE.md`: the environment contract (copy the block from the test repo)
-   plus project notes.
+5. `CLAUDE.md`: the environment contract (copy the block from
+   `azfn-rust-handler`, the repo the harness was verified against) plus
+   project notes.
 6. No `.claude/skills/<x>/.claude-plugin/plugin.json` anywhere. A directory
    with that manifest is a plugin.
 7. `direnv allow`, then `ccmux <customer>/<repo> -p "list the tools on PATH"`
@@ -127,7 +130,7 @@ rules.
 
 Unit tests, no Claude Code needed, from a checkout of this repo:
 ```
-nix flake check                                     # both managed trees, the repo settings file, ccmux; in the Nix sandbox
+nix flake check                                     # every suite under tests/, in the Nix sandbox
 nix shell nixpkgs#jq -c tests/hook-test.sh /etc/claude-code/hooks/env-guard.sh   # the installed hook, managed host
 nix shell nixpkgs#jq -c tests/hook-test.sh "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' <repo>/.claude/settings.json)"   # the repo's hook
 tests/ccmux-test.sh "$(command -v ccmux)"           # inside a repo shell, or after home-manager switch
@@ -162,6 +165,21 @@ claude --debug -p hi 2>&1 | grep -i allowManagedModsOnly    # guard loaded
 Outside the repo: on an unmanaged host everything your own settings allow;
 on a mixed host `git commit` allowed, `sudo` still blocked.
 
+On a fresh distro (a throwaway Ubuntu 24.04 VM with a sudo user), the
+install route:
+
+1. `git clone <repo> harness && cd harness && ./install.sh`: the
+   user-namespace restriction is reported and fixed on `y`, Nix installed,
+   two profile installs, shell built, the self-check line passes.
+2. New terminal, `cd harness`, `ccmux` opens tmux with Claude; in a second
+   window `claude -p 'run: git commit -m x'` is refused and
+   `claude -p 'run: grep -i nonewprivs /proc/self/status'` prints
+   `NoNewPrivs: 1`.
+3. VS Code with the direnv extension: the integrated terminal has `claude`
+   and `ccmux`.
+4. `./install.sh` again: no installer, no duplicate rc lines.
+5. `/nix/nix-installer uninstall`: apt untouched, repo intact.
+
 After a Claude Code upgrade also re-read the settings reference for the
 keys in `lib/settings.nix`; the file header records the version they were
 checked against. Keys that stop existing are silently ignored,
@@ -172,11 +190,10 @@ which is the dangerous direction.
 - Claude Code comes from nixpkgs (`programs.claude-code`). Auto-update is
   disabled; `nix flake update nixpkgs` moves it. Minimum 2.1.295 for
   `onFailure: block`.
-- direnv: `pkgs/direnv.nix` overrides to 2.38.2 while nixpkgs is older.
-  When `nix eval nixpkgs#direnv.version` reports 2.38 or newer, delete the
-  file and point the remaining imports (`lib/managed-tree.nix` default,
-  `flake.nix` packages) at `pkgs.direnv`; the NixOS, home and devenv
-  modules already fall back to `pkgs.direnv` on their own.
+- direnv: `pkgs/direnv.nix` overrides to 2.38.2 while nixpkgs is older and
+  is `pkgs.direnv` otherwise. When `nix eval nixpkgs#direnv.version`
+  reports 2.38 or newer, delete the file and replace every
+  `import ../pkgs/direnv.nix` with `pkgs.direnv`.
 - devenv from nixpkgs (2.4.0 at the time of writing). Each repo pins its own
   devenv inputs in `devenv.lock`; `devenv update harness` bumps the harness
   input in one repo.

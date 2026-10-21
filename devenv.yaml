@@ -1,0 +1,9 @@
+# yaml-language-server: $schema=https://devenv.sh/devenv.schema.json
+inputs:
+  nixpkgs:
+    # The guard hook needs Claude Code >= 2.1.295; devenv-nixpkgs/rolling lags.
+    url: github:NixOS/nixpkgs/nixos-unstable
+imports:
+  - ./devenv
+# claude-code is unfree.
+allow_unfree: true

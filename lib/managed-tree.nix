@@ -1,5 +1,4 @@
-# One store path: linked at /etc/claude-code on the host, or copied into a
-# devenv-built container image.
+# One store path, linked at /etc/claude-code on the host.
 {
   pkgs,
   lib,

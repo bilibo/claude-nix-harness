@@ -8,10 +8,13 @@ parentheses refer to sections of the original build brief.
 - NixOS module: managed settings, hook, sandbox, mod policy, directory
   scoping, per-host options (5.2)
 - home-manager module: direnv, tmux, `ccmux` (5.1, without the broker signal)
-- devenv module: generated project settings, host check
-- Hook unit tests (154 cases, 180 with enforcement roots), the generated
-  repo settings file and ccmux resolver tests, run by `nix flake check`
-  (part of 5.6)
+- devenv module: generated project settings, host check, `harness.claudeCode.enable`
+- Install route for any Linux (2026-10-19): `install.sh`, tested with every
+  command stubbed; not yet run on a real distro (runbook section 5 has the
+  steps)
+- Hook unit tests (against three built hooks: plain, enforcement roots,
+  stub direnv), the generated repo settings file and ccmux resolver tests,
+  run by `nix flake check` (part of 5.6)
 - Own repo with a `flake.nix` exporting `nixosModules.harness`,
   `homeModules.harness`, `lib`, the managed trees as packages and the tests
   as `checks` (2026-10-17)
@@ -28,10 +31,8 @@ parentheses refer to sections of the original build brief.
 The tier, read-fence, customer-module and `ccmux` subcommand work is
 phased in `docs/handoff-tiers.md`; this list keeps the overall order.
 
-0. **Bootstrap for any Linux** (decided 2026-10-19, not yet designed): an
-   install script that puts Nix, devenv and direnv on the host and the
-   managed tree at /etc/claude-code, so a non-NixOS machine gets the
-   managed-host tier with one command. The WSL tier builds on it too.
+0. **Run `install.sh` on a fresh Ubuntu 24.04** (runbook section 5) and
+   fix what it finds. The WSL tier builds on this route.
 1. **Verify the repo-only shape live.** On an unmanaged host: `direnv
    reload` in a harness repo, accept the trust dialog once, run the live
    checks in the runbook. First time a real session runs on the repo file

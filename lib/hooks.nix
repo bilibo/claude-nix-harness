@@ -32,6 +32,7 @@ let
         pkgs.coreutils
         pkgs.diffutils
         pkgs.findutils
+        pkgs.gnused
       ]
       {
         allowLocalCommits = if allowLocalCommits then "1" else "0";
