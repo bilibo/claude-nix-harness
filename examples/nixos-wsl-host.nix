@@ -1,5 +1,7 @@
-# The managed NixOS-WSL host shape, the Windows row of the README's host
-# table. scripts/install-wsl.ps1 installs NixOS-WSL, puts your nixos-config
+# The default Windows route is the plain host, examples/nixos-wsl-plain.nix; this file is the stricter opt-in.
+#
+# The managed NixOS-WSL host shape, the managed Windows row of the README's
+# host table. scripts/install-wsl.ps1 installs NixOS-WSL, puts your nixos-config
 # flake at /etc/nixos and switches to its nixosConfigurations.<name>; that
 # flake imports NixOS-WSL, home-manager, this repository's two modules and
 # a file like this one. Build-only material, like nixos-host.nix; the

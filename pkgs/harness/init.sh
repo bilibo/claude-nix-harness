@@ -8,7 +8,12 @@
 # (direnv allow, approval of the files require_allowed names, which makes
 # devenv write .claude/settings.json) and runs the repo's static checks on
 # the result: project-settings-test.sh on the generated file, hook-test.sh on
-# the hook it names, ccmux's resolution. A new directory under
+# the hook it names, ccmux's resolution. A repo whose devenv.nix sets
+# harness.enable = false loads with no settings file: init says so and stops
+# there, exit 0. The role the shell exports (HARNESS_ROLE) is reported:
+# with harness.role = "center", the harness checkout's own (sandbox off),
+# the settings test runs in its center mode, and a center role in a repo
+# that is not the harness checkout gets a warning. A new directory under
 # $HARNESS_CODE_ROOT/<customer>/<repo> (default ~/code/git), or an existing
 # repo given by path. Files that exist are left alone and reported; --force
 # overwrites the harness-owned ones (devenv.yaml, .envrc). .gitignore and
@@ -30,7 +35,13 @@
 # devenv.lock records the revision either way; `devenv update harness` moves
 # it. On a WSL host (binfmt WSLInterop, or WSL_DISTRO_NAME) the devenv.nix
 # gets harness.platform = "wsl", which hides /mnt/c and /run/WSL from the
-# sandbox.
+# sandbox. On a host with no claude on PATH (the plain WSL host, whose
+# Claude Code is the VS Code extension's bundled binary) it gets
+# harness.claudeCode.enable = true, the CLI for tmux and ccmux sessions, and
+# devenv.yaml gets allow_unfree: true (claude-code is unfree); a claude on
+# PATH leaves both commented out. A PATH directory in the Nix store is a
+# shell's, not the host's (init run from inside a repo shell), and one under
+# ~/.vscode-server is the extension's own: neither counts.
 # shellcheck disable=SC2016  # single quotes are deliberate where direnv or bash must see the `$`
 set -euo pipefail
 
@@ -114,6 +125,23 @@ if [ -e "$WSL_MARKER" ] || [ -n "${WSL_DISTRO_NAME:-}" ]; then
   platform_line='    platform = "wsl";                  # this host is WSL: /mnt/c and /run/WSL hidden from the sandbox'
   note platform 'wsl (harness.platform in devenv.nix)'
 fi
+# The host's claude, if any (header): the first on PATH outside the store
+# (NIX_STORE_DIR when Nix is relocated) and outside VS Code's server.
+host_claude=""
+IFS=: read -r -a path_dirs <<<"$PATH"
+for d in "${path_dirs[@]}"; do
+  case "$d" in "${NIX_STORE_DIR:-/nix/store}"/*|"$HOME"/.vscode-server*) continue ;; esac
+  if [ -f "$d/claude" ] && [ -x "$d/claude" ]; then host_claude="$d/claude"; break; fi
+done
+claude_line='    # claudeCode.enable = true;        # claude, tmux and jq in this shell, for a host without claude'
+unfree_line='# allow_unfree: true  # for harness.claudeCode.enable in devenv.nix: claude-code is unfree'
+if [ -z "$host_claude" ]; then
+  claude_line='    claudeCode.enable = true;          # the CLI for tmux/ccmux sessions; the VS Code extension brings its own'
+  unfree_line='allow_unfree: true  # for harness.claudeCode.enable in devenv.nix: claude-code is unfree'
+  note claude 'none on the host PATH: claudeCode.enable = true in devenv.nix, allow_unfree: true in devenv.yaml'
+else
+  note claude "$host_claude on the host PATH: claudeCode.enable left commented out in devenv.nix"
+fi
 if [[ "$HARNESS_REF" == path:/nix/store/* ]]; then
   note warn "devenv.yaml would pin a store path that garbage collection removes: pass --harness github:bilibo/claude-nix-harness or --harness path:<checkout>"
 fi
@@ -126,7 +154,8 @@ inputs:
     url: $HARNESS_REF
     flake: false
 imports:
-  - harness/devenv" owned
+  - harness/devenv
+$unfree_line" owned
 
 put devenv.nix "# Project tools and harness options. Allow rules for this project go in
 # harness.settings here, proposed as a diff by an agent and committed by you,
@@ -145,12 +174,15 @@ put devenv.nix "# Project tools and harness options. Allow rules for this projec
   # languages.rust.enable = true;      # a toolchain; cargo's hosts go in extraAllowedDomains
   # env.ARM_TENANT_ID = \"...\";         # identifiers only; secrets stay in .env
   harness = {
+    # enable = false;                  # guard rails off for this repo: no rules file, hook or sandbox
+    # role = \"center\";                 # the harness checkout only (the command center): no sandbox there; never a work repo
     # allowMemoryEdits = true;         # Claude keeps its auto-memory under ~/.claude/projects
     # allowLocalCommits = true;        # commits on the worktree branch; push stays impossible
     # readFence = true;                # hide the rest of \$HOME from sandboxed commands
     # extraAllowRead = [ \"~/.cargo\" ]; # with readFence: what the project reads under \$HOME
     # allowConnectors = true;          # claude.ai connectors, MCP servers outside the sandbox
 $platform_line
+$claude_line
     # extraDeny = [ \"Bash(az devops *)\" ];
     # extraAllowedDomains = [ \"dev.azure.com\" ];              # sandbox allowlist, unmanaged host only
     # settings.permissions.allow = [ \"Bash(terraform plan *)\" ];
@@ -257,13 +289,37 @@ if [ -L "$settings" ] && [ -r "$settings" ] && [[ "$(readlink -f "$settings")" =
   note ok ".claude/settings.json -> $(readlink "$settings")"
 elif [ -L "$settings" ]; then
   die ".claude/settings.json is a dangling symlink (direnv reload rewrites it)"
+elif [ "$(direnv exec "$repo" "$BASH" -c 'printf %s "${DEVENV_ROOT:+loaded}${HARNESS_PROJECT:+ harness}"' 2>/dev/null)" = loaded ]; then
+  # The shell loaded and the module exported nothing: the repo owner turned
+  # the guard rails off (harness.enable = false), so there is nothing to check.
+  note off "the shell loads without the guard rails: harness.enable = false in devenv.nix (or devenv.yaml does not import harness/devenv)"
+  exit 0
 else
   die ".claude/settings.json was not written: the devenv shell did not load (direnv status in $repo)"
 fi
-bash "$HARNESS_TESTS/project-settings-test.sh" "$settings" "$repo" || die "the generated settings file fails the harness checks"
+# The role the shell exports (HARNESS_ROLE): work, the default, in every
+# repo init sets up; center in the harness checkout (the command center,
+# which scripts/install.sh initializes too), whose file has the sandbox off
+# by design: the settings test runs in its center mode there. A center role
+# in a repo without the harness's own module and settings source is a work
+# repo set up wrong: a warning, not a stop.
+role=$(direnv exec "$repo" "$BASH" -c 'printf %s "${HARNESS_ROLE:-}"' 2>/dev/null || true)
+mode=""
+if [ "$role" = center ]; then
+  mode=center
+  note role "center: the command center's file, sandbox off by design; the settings test runs in center mode"
+  [ -f "$repo/devenv/devenv.nix" ] && [ -f "$repo/lib/settings.nix" ] \
+    || note warn "harness.role = \"center\" but $repo is not the harness checkout (no devenv/devenv.nix and lib/settings.nix): a work repo leaves role unset, or it runs without the sandbox; remove the line from devenv.nix, direnv allow"
+else
+  note role "${role:-work (HARNESS_ROLE unset: a harness revision before harness.role)}"
+fi
+bash "$HARNESS_TESTS/project-settings-test.sh" "$settings" ${mode:+"$mode"} "$repo" || die "the generated settings file fails the harness checks"
 hook=$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$settings")
 bash "$HARNESS_TESTS/hook-test.sh" "$hook" || die "the repo's hook fails the unit tests"
-if res=$(direnv exec "$repo" ccmux -n 2>/dev/null); then note ok "ccmux -n: $res"; else note warn "ccmux -n failed (run it in the repo shell to see why)"; fi
+# ccmux -n prints the session line, the role and window line, then where
+# the window's claude comes from: one note. Its error names what is missing.
+if res=$(direnv exec "$repo" ccmux -n 2>/dev/null); then note ok "ccmux -n: ${res//$'\n'/; }"
+else note warn "ccmux -n failed: $({ direnv exec "$repo" ccmux -n 2>&1 || true; } | grep -m1 '^ccmux:' || echo 'run it in the repo shell to see why')"; fi
 { set +x; } 2>/dev/null
 
 cat <<NEXT

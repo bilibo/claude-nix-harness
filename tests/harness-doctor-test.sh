@@ -4,7 +4,8 @@
 # `harness doctor` on a host that has nothing: an empty HOME, a PATH with no
 # nix, claude, code, direnv or tmux (the Nix build sandbox is such a host).
 # It must report MISSING lines, run to its summary and exit 1, never stop
-# early. Then the repo part, in three fake repos: the settings file as a
+# early; no claude is an info line and no tmux a warning, neither MISSING.
+# Then the repo part, in three fake repos: the settings file as a
 # store symlink (its hooks must run), as a dangling symlink, as a plain file.
 # The host line for a NixOS and a WSL os-release (fake markers; the build
 # sandbox has no /etc/os-release, so the plain case has no host at all).
@@ -36,11 +37,37 @@ mkdir -p "$tmp/empty"
 doctor "$tmp/empty"
 exits "doctor exits 1 when something is missing" 1
 check "nix reported missing"    'MISSING nix'
-check "claude reported missing" 'MISSING claude'
 check "direnv reported missing" 'MISSING direnv'
 check "ran to the summary"      'harness doctor: [0-9]+ missing, [0-9]+ warnings'
 refute "no shell error"         'unbound variable|syntax error|line [0-9]+:|command not found'
 refute "no repo part outside a repo" 'repo: '
+# No host claude is a supported shape (the plain WSL host: the VS Code
+# extension's binary, the CLI from a repo's harness.claudeCode.enable): an
+# info line, no claude doctor. No host tmux is a warning: ccmux carries its
+# own, attaching by hand needs one.
+check "no claude is an info line" 'info  claude not on the host PATH: the VS Code extension brings its own; repos get the CLI from harness\.claudeCode\.enable'
+refute "no claude is not missing" 'MISSING claude'
+refute "no claude doctor without claude" 'claude doctor:'
+check "no tmux is a warning"    'warn  tmux not on the host PATH: ccmux brings its own'
+refute "no tmux is not missing" 'MISSING tmux( [^h]|$)' # `tmux harness block` is the config file's line
+# Counted: the same host with claude and tmux stubs has the same number
+# missing and one warning fewer (tmux's; the info line counts nowhere).
+summary_of() { [[ "$out" =~ harness\ doctor:\ ([0-9]+)\ missing,\ ([0-9]+)\ warnings ]] && echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"; }
+read -r miss0 warn0 < <(summary_of)
+mkdir -p "$tmp/cbin"
+# shellcheck disable=SC2016  # the stub's own $1
+printf '#!/bin/sh\ncase "$1" in --version) echo "2.1.305 (Claude Code)" ;; doctor) echo "No installation issues found" ;; esac\n' >"$tmp/cbin/claude"
+printf '#!/bin/sh\necho "tmux 3.5a"\n' >"$tmp/cbin/tmux"; chmod +x "$tmp/cbin/claude" "$tmp/cbin/tmux"
+doctor "$tmp/empty" "$tmp/cbin"
+check "host claude reported"    'ok    claude 2\.1\.305 '
+check "claude doctor with claude" 'ok    claude doctor: no installation issues'
+check "host tmux reported"      'ok    tmux 3\.5a'
+read -r miss1 warn1 < <(summary_of)
+if [ -n "${miss0:-}" ] && [ "$miss0" = "${miss1:-}" ] && [ "$warn0" = "$((warn1 + 1))" ]; then pass=$((pass+1))
+else fail=$((fail+1)); echo "FAIL: without claude and tmux: ${miss0:-?} missing, ${warn0:-?} warnings; with both: ${miss1:-?} missing, ${warn1:-?} warnings (want the same missing, one warning more)"; fi
+printf '#!/bin/sh\necho "2.1.200 (Claude Code)"\n' >"$tmp/cbin/claude"
+doctor "$tmp/empty" "$tmp/cbin"
+check "an old host claude is still missing" 'MISSING claude 2\.1\.200 is older than'
 
 mkdir -p "$tmp/repo/.claude"; touch "$tmp/repo/.envrc"
 ln -s "$settings" "$tmp/repo/.claude/settings.json"
@@ -72,7 +99,7 @@ refute "mask is no repo verdict" 'no runnable hook|plain file|dangling symlink|p
 mkdir -p "$tmp/bin"; printf '#!/bin/sh\nexit 0\n' >"$tmp/bin/code"; chmod +x "$tmp/bin/code"
 doctor "$tmp/empty" "$tmp/bin"
 check "silent code reported"    'warn  code is on PATH but answers nothing'
-refute "no extension verdict"   'VS Code extension'
+refute "no extension verdict"   'VS Code extension [a-z]+\.' # the verdict names the extension; the claude info line does not
 
 # The host line: NixOS from os-release alone (the /etc/NIXOS marker is not
 # visible from inside a session), WSL from its marker.

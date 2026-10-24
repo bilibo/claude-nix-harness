@@ -175,11 +175,15 @@ is not denied by name; `sudo` is, which is what `dnf install` needs.
   platform/customer and derive the actor from `CLAUDECODE` (Claude Code sets
   it in the Bash tool's environment; verify in a live session before
   relying on it) for the `-agent`/`-human` suffix of `AZURE_CONFIG_DIR`.
+  Realised 2026-10-24 as `HARNESS_ROLE` (`work`/`center`), from the devenv
+  shell rather than `ccmux` (phase 2).
 - "`nh os switch` is refused in both tiers": false today, see Host above.
 - "Podman is the container engine": removed; nothing depends on it.
 - `claude plugin validate` is denied by the universal `claude plugin` rule;
   a platform tier that allows it needs the rule split into
   `claude plugin install|marketplace|...` and the hook regex changed too.
+  Moot since 2026-10-24: the harness ships no mods (`docs/sessions.md`
+  section 5), so no tier has anything to validate and the rule stays whole.
 
 ## 4. Phases
 
@@ -200,7 +204,7 @@ Each phase: file list first, approval, implement, tests as cases in
   `.claude/settings.json` symlink (present, dangling, which store path),
   its direnv approval and the hooks it registers; plain text, one line per
   item, exit 1 when something it needs is missing. Still to add:
-  `HARNESS_CODE_ROOT`, `HARNESS_PROJECT` and the resolved tier for the cwd
+  `HARNESS_CODE_ROOT`, `HARNESS_PROJECT` and the cwd's `HARNESS_ROLE`
   (phase 2). `ccmux -n` stays as it is.
 - Update the runbook's verification section to start with `harness doctor`.
 
@@ -209,40 +213,57 @@ from the laptop.
 
 ### Phase 2: tiers and the read fence
 
-Two tiers, chosen by `ccmux` from the cwd: `ccmux platform`, or a cwd under
-a configured platform root (`~/nixos-config`, this repo), gives `platform`;
-a cwd under `HARNESS_CODE_ROOT` gives `customer`; anything else refuses to
-start. `HARNESS_TIER` exported into the tmux window.
+Partly realised on 2026-10-24 as `harness.role` (`docs/command-center.md`,
+`docs/sessions.md` section 3). The plan was two tiers chosen by `ccmux`
+from the cwd (`ccmux platform`, or a cwd under a configured platform root
+such as `~/nixos-config` or this repo, gives `platform`; a cwd under
+`HARNESS_CODE_ROOT` gives `customer`; anything else refuses to start),
+`HARNESS_TIER` in the tmux window, a read fence common to both, and for
+platform roots without a devenv a generated file passed by `ccmux` as
+`--settings <store path>` on the outer `claude`.
 
-Common to both, in `lib/settings.nix`:
+What the role gives:
 
-- `permissions.blockReadsOutsideWorkingDirectories = true`. Check whether
-  `sandbox.filesystem` has an allow-read list (`allowRead` or similar) in
-  the settings reference; if it does, add `denyRead` of the code root with
-  an allow-read of the repo itself (`config.devenv.root` is known at devenv
-  eval time), so Bash cannot read a sibling customer either. If it does not,
-  record Bash reads of siblings as a gap closed only by RBAC.
-- The `nh` and `nixos-rebuild` rules from phase 1.
+- The tier is the repo owner's devenv option, `harness.role = "work"`
+  (default, the customer tier) or `"center"` (the platform tier, this
+  checkout), exported by the shell as `HARNESS_ROLE` and carried by
+  `ccmux`, which names the tmux window after it and does not pass
+  `center` on to a work session it launches. No platform roots, no `ccmux
+  platform`.
+- `center`: the same deny set and hook as `work`, git rules included
+  (decision 3 below), the sandbox off (Bash prompted, no allowlist, no
+  confinement), memory on, read fence off, the lint tools in the shell.
+  The checkout imports the module pinned from GitHub like a work repo, so
+  its live rules move with `devenv.lock`, not with the working tree.
+- `work`: the existing module output, unchanged; `harness init` refuses a
+  repo that sets `center`.
+- The hook refuses `ccmux` with the launch flags it refuses on a nested
+  `claude` (rule 6).
 
-Platform tier: a generated settings file for repos that have no devenv,
-passed by `ccmux` as `--settings <store path>` on the outer `claude`
-(the hook's refusal of `--settings` is for nested sessions only, so this is
-consistent; document it). Deny set: universal minus `claude plugin
-validate`, plus the project git rules only if Raul wants them there (today
-nixos-config sessions commit; ask). No cloud tools: the platform PATH is the
-user's PATH, so `az` and `terraform` from `home.packages` in nixos-config
-are on it. Either Raul moves them to a devenv, or the tier wraps `claude`
-with a PATH filter; propose both, let him pick. No `AZURE_CONFIG_DIR`, no
-`ARM_*`.
+Still open:
 
-Customer tier: the existing devenv module output, unchanged except for the
-read fence. `platform = "wsl"` already hides `/mnt/c` and `/run/WSL`;
-device-code login is a devenv-module concern (phase 3).
+- The managed host. A managed `sandbox.enabled = true` wins over the repo
+  file and cannot be scoped by directory, so there `center` turns nothing
+  off: the center keeps the sandbox, and `ccmux` from it meets the tmux
+  socket again (roadmap 2.8). Whether a managed host has a center at all,
+  and whether its managed layer limits `center` to configured platform
+  roots (the plan's roots, as a NixOS option), is undecided.
+- Platform roots without a harness devenv (`~/nixos-config`): no role, no
+  generated file; the `--settings` route was not built. Its deny set as
+  planned: universal, the `claude plugin` rule whole (the `validate`
+  exception went with the broker mod, 2026-10-24), the git rules if Raul
+  wants them there. Cloud tools on its PATH stay decision 2.
+- The read fence. `readFence` exists for work repos (roadmap 2.1), off by
+  default; `permissions.blockReadsOutsideWorkingDirectories` is set
+  nowhere, and the center must not set it: it reads the work repos.
+- `harness doctor` reporting the role (phase 1).
 
-Tests (unit, in `tests/`): the generated platform and customer files carry
-`blockReadsOutsideWorkingDirectories`; `nh os switch` denied in both; `az`
-absent from the platform PATH if the wrapper route is chosen; `ccmux -n`
-reports the tier. Live cases go to phase 5.
+Tests (unit): `project-settings-center-test` (the center's file: sandbox
+off with only the credential list under it, every other check a work
+repo's), `devenv-module-eval` (`role = "center"` writes exactly that file,
+exports `HARNESS_ROLE=center`, adds the lint tools; `work` is the
+default), the `ccmux` cases in `hook-test`. `nh os switch` is denied in
+both roles (phase 1). Live cases go to phase 5.
 
 ### Phase 3: `devenv/customer` module
 
@@ -274,7 +295,9 @@ in the Perplexity plan (`customer.name`, `tenantId`, `subscriptionId`,
   (`packages.claude-doc-quality`), which the harness must not depend on.
   Options: move the plugin to this repo, or give the devenv module a
   `harness.plugins` list of store paths it links under `.claude/skills/`.
-  Ask Raul before choosing.
+  Ask Raul before choosing. Since 2026-10-24 the harness ships no plugins
+  or mods (`docs/sessions.md` section 5), which rules out the first option
+  as a plugin; skills linked by the devenv module are still open.
 
 Tests: a scratch repo built in a `nix flake check` derivation cannot run
 devenv; write the module so its pure parts (env var attrset, hook branch)
@@ -330,7 +353,9 @@ tested. `harness doctor --full` runs it.
    it from nixos-config.
 2. Platform-tier cloud tools: move `az`, `azd`, `terraform` from
    `home.packages` into a devenv, or wrap `claude` with a PATH filter.
-3. Whether platform-tier sessions may commit (today they do).
+3. Whether platform-tier sessions may commit (today they do). Decided
+   2026-10-24 for the command center: no, its git rules are a work
+   repo's (`docs/command-center.md`); `~/nixos-config` is still open.
 4. Where the doc-quality plugin lives for customer repos.
 5. `allowWrite = true` semantics against the unconditional apply/destroy
    deny.
@@ -340,6 +365,9 @@ tested. `harness doctor --full` runs it.
    and plugins should be off on the work host too (`syncClaudeAiSkills`,
    `syncClaudeAiPlugins`: user or managed scope; the bootstrap's
    `--no-account-sync` writes them since 2026-10-21, default on).
+   Decided 2026-10-24 for unmanaged hosts: off by default, the bootstrap
+   writes both `false`s unless run with `--account-sync`. The managed
+   settings do not set them; the managed host is still open.
 8. Decided 2026-10-21: a new `harness` command (`pkgs/harness.nix`;
    `ccmux` stays a launcher and the scripts keep their bash bodies under
    `pkgs/harness/`), not subcommands of `ccmux` as the phases above

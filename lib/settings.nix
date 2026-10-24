@@ -4,11 +4,13 @@
 # .claude/settings.json the devenv module writes: the same rules, minus the
 # keys Claude Code reads from managed settings only, so a host without
 # managed settings (an unmanaged host) still gets deny rules, every hook and
-# the sandbox from the repo alone. On a managed host the two agree;
-# `allowManagedHooksOnly` (the work-host default) keeps the repo copy of the
-# hooks from running as well. A mixed host that sets it false runs both
-# copies on every event: same verdicts, and the env preamble is written
-# twice with identical content.
+# the sandbox from the repo alone (the command center's copy, `sandbox =
+# false` and `centerRoot`, has everything but the sandbox, and its
+# setup-file rules hold in its own root only). On a managed host the two
+# agree; `allowManagedHooksOnly` (the work-host default) keeps the repo
+# copy of the hooks from running as well. A mixed host that sets it false
+# runs both copies on every event: same verdicts, and the env preamble is
+# written twice with identical content.
 #
 # Key names and scopes checked against the Claude Code settings reference on
 # 2026-10-18 for version 2.1.296. Re-check after upgrades.
@@ -20,8 +22,6 @@
   # Where the hooks live: /etc/claude-code/hooks (stable) or the store path
   # of lib/hooks.nix (the repo settings are regenerated at every shell entry).
   hookDir,
-  # Managed only.
-  marketplaceDir ? null,
   allowLocalCommits ? false,
   allowMemoryEdits ? false,
   # Let the claude.ai account's connectors (Gmail, Drive, Notion, ...) load.
@@ -38,16 +38,11 @@
   # Managed only (user-or-managed scope; a repo cannot set it).
   # true: unknown hosts are refused inside the sandbox; false: prompted.
   strictAllowlist ? true,
-  # Managed only. Same shape as strictKnownMarketplaces (a list of sources
+  # Managed only. The whole of `strictKnownMarketplaces` (a list of sources
   # the user may add); not the settings key of the same name, which
-  # registers marketplaces and is written below from `mods`.
+  # registers marketplaces and is never written. Empty, the default: no
+  # marketplace can be added at all.
   extraKnownMarketplaces ? [ ],
-  # Managed only. Names of the mods in the managed marketplace directory
-  # (lib/mods.nix). Non-empty: the directory is registered by absolute path
-  # and each mod enabled from it, which is what makes them the
-  # organisation's mods under the guard (docs/sessions.md section 5).
-  mods ? [ ],
-  marketplaceName ? "harness",
   # Repo only: the checkout's absolute path (devenv's `config.devenv.root`).
   # Linux skips glob `denyWrite` entries, so the repo copy also lists its own
   # settings, hooks and `.git` files as literal paths. A worktree has a
@@ -62,7 +57,24 @@
   # Further `allowRead` entries for a fenced repo: a `path:` devenv input,
   # `~/.cargo` for a Rust project, ...
   extraAllowRead ? [ ],
+  # Repo only. false: the command center (`harness.role = "center"`,
+  # docs/command-center.md). `sandbox.enabled = false` with only the
+  # credential list under it: no network allowlist, no filesystem rules,
+  # so Bash commands run unconfined and Claude Code's ordinary permission
+  # prompts ask for each one. Every key outside `sandbox` is unchanged
+  # (the deny rules move with `centerRoot`). On a managed host the managed
+  # `enabled = true` wins over it.
+  sandbox ? true,
+  # Repo only. The command center's checkout (`harness.role = "center"`),
+  # or null: there the setup-file deny rules name this root only
+  # (lib/deny-rules.nix), so the center can set up other repos. Pass the
+  # same path to lib/hooks.nix.
+  centerRoot ? null,
 }:
+assert lib.assertMsg (
+  sandbox || !managed
+) "lib/settings.nix: the managed settings always carry the sandbox (sandbox = false is repo only)";
+assert lib.assertMsg (centerRoot == null || !managed) "lib/settings.nix: centerRoot is repo only";
 let
   denyRules = import ./deny-rules.nix { inherit lib; };
   # A project rule: in the managed copy only when the host enforces
@@ -115,7 +127,6 @@ let
     }
     // extra;
 in
-assert managed -> marketplaceDir != null;
 {
   "$schema" = "https://json.schemastore.org/claude-code-settings.json";
 
@@ -125,7 +136,7 @@ assert managed -> marketplaceDir != null;
     disableBypassPermissionsMode = "disable";
     deny =
       denyRules {
-        inherit allowLocalCommits allowMemoryEdits;
+        inherit allowLocalCommits allowMemoryEdits centerRoot;
         scope = if everywhere then "all" else "universal";
       }
       ++ extraDeny;
@@ -135,8 +146,10 @@ assert managed -> marketplaceDir != null;
 
   # Honoured from any scope, the repo file included; a `true` in user or
   # managed settings cannot be undone here. Account-synced skills and plugins
-  # (`syncClaudeAiSkills`, `syncClaudeAiPlugins`) are user-or-managed scope
-  # and still load: README, "What a repo cannot enforce on its own".
+  # (`syncClaudeAiSkills`, `syncClaudeAiPlugins`) are user-or-managed scope,
+  # so the repo file cannot turn them off; `harness bootstrap` writes the
+  # `false`s into user scope (by default since 2026-10-24): README, "What a
+  # repo cannot enforce on its own".
   disableClaudeAiConnectors = !allowConnectors;
 
   includeCoAuthoredBy = false;
@@ -209,8 +222,39 @@ assert managed -> marketplaceDir != null;
     ];
   };
 
+  # The command center (`sandbox = false`) keeps the switch and the
+  # credential list only; a repo's `filesystem` and `network` would qualify
+  # a sandbox that is off.
   sandbox = {
-    enabled = true;
+    enabled = sandbox;
+    # `deny` entries survive in a repo file; only `mask` entries are dropped
+    # from project and local scope. The GitHub tokens: no push or `gh` write
+    # credential inside the sandbox, the layer the hook's text rules lean on.
+    # Kept with the sandbox off as well; whether Claude Code strips them from
+    # an unsandboxed command is not verified (2026-10-24).
+    credentials.envVars =
+      map
+        (name: {
+          inherit name;
+          mode = "deny";
+        })
+        [
+          "ARM_CLIENT_SECRET"
+          "AZURE_CLIENT_SECRET"
+          "GITHUB_TOKEN"
+          "GH_TOKEN"
+          "GH_ENTERPRISE_TOKEN"
+          "GITHUB_ENTERPRISE_TOKEN"
+        ]
+      ++ lib.optionals everywhere sshSandbox.credentials.envVars
+      ++ lib.optionals (platform == "wsl") [
+        {
+          name = "WSL_INTEROP";
+          mode = "deny";
+        }
+      ];
+  }
+  // lib.optionalAttrs sandbox {
     # A false here holds against a repo's true (2.1.285+); the repo copy
     # repeats it so a host without managed settings gets the same.
     allowUnsandboxedCommands = false;
@@ -293,58 +337,18 @@ assert managed -> marketplaceDir != null;
       ++ extraAllowedDomains;
     }
     // lib.optionalAttrs managed { inherit strictAllowlist; };
-    # `deny` entries survive in a repo file; only `mask` entries are dropped
-    # from project and local scope. The GitHub tokens: no push or `gh` write
-    # credential inside the sandbox, the layer the hook's text rules lean on.
-    credentials.envVars =
-      map
-        (name: {
-          inherit name;
-          mode = "deny";
-        })
-        [
-          "ARM_CLIENT_SECRET"
-          "AZURE_CLIENT_SECRET"
-          "GITHUB_TOKEN"
-          "GH_TOKEN"
-          "GH_ENTERPRISE_TOKEN"
-          "GITHUB_ENTERPRISE_TOKEN"
-        ]
-      ++ lib.optionals everywhere sshSandbox.credentials.envVars
-      ++ lib.optionals (platform == "wsl") [
-        {
-          name = "WSL_INTEROP";
-          mode = "deny";
-        }
-      ];
   };
 }
 // lib.optionalAttrs managed {
-  # The built-in guard only loads when managed settings exist and reads
-  # `allowManagedModsOnly` from here only. With no mods listed the managed
-  # marketplace is empty and unregistered, so the guard refuses every mod.
+  # The mod policy. The harness ships no mods (2026-10-24, docs/sessions.md
+  # section 5), so nothing registers a marketplace or enables a plugin
+  # (no `extraKnownMarketplaces` key, no `enabledPlugins`, no
+  # `prependPlugins`) and every mod is refused. The built-in guard only
+  # loads when managed settings exist and reads `allowManagedModsOnly` from
+  # here only; with no organisation mod it refuses them all.
   pluginConfigs."cc-plugin-sec-default@builtin".options.allowManagedModsOnly = true;
   disableSideloadFlags = true;
-  strictKnownMarketplaces = [
-    {
-      source = "directory";
-      path = marketplaceDir;
-    }
-  ]
-  ++ extraKnownMarketplaces;
-}
-// lib.optionalAttrs (managed && mods != [ ]) {
-  # Key shapes from the plugin marketplace, org and mods admin pages
-  # (2026-10-21): an object keyed by marketplace name, a `directory` source
-  # by absolute path; `enabledPlugins` keyed `<plugin>@<marketplace>`. No
-  # `prependPlugins`: once set it must name `sec-default@builtin` or the
-  # guard stops loading, and one managed mod needs no ordering.
-  extraKnownMarketplaces.${marketplaceName}.source = {
-    source = "directory";
-    path = marketplaceDir;
-  };
-  enabledPlugins = lib.listToAttrs (
-    map (name: lib.nameValuePair "${name}@${marketplaceName}" true) mods
-  );
+  # Which marketplaces a user may add; an empty list adds none.
+  strictKnownMarketplaces = extraKnownMarketplaces;
 }
 // lib.optionalAttrs (managed && allowManagedHooksOnly) { allowManagedHooksOnly = true; }

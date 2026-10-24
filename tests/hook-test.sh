@@ -7,9 +7,12 @@
 set -uo pipefail
 hook="${1:?usage: hook-test.sh <env-guard.sh>}"
 # The roots come from the built hook; with none, everything is in scope and
-# the out-of-scope section is skipped.
+# the out-of-scope section is skipped. A command center's hook (CENTER_ROOT,
+# lib/hooks.nix) runs every case from inside its checkout, then its own
+# section; HOOK_TEST_CENTER runs that section against any hook.
 ROOTS=$(sed -n 's/^ENFORCEMENT_ROOTS="\(.*\)"$/\1/p' "$hook")
-IN="${HOOK_TEST_IN:-${ROOTS%%:*}/acme/infra}"; IN="${IN/#\~/$HOME}"
+CENTER="${HOOK_TEST_CENTER:-$(sed -n 's/^CENTER_ROOT="\(.*\)"$/\1/p' "$hook")}"
+IN="${HOOK_TEST_IN:-${CENTER:-${ROOTS%%:*}/acme/infra}}"; IN="${IN/#\~/$HOME}"
 OUT="${HOOK_TEST_OUT:-/tmp/p}"
 pass=0; fail=0
 
@@ -239,6 +242,34 @@ block 'claude -p hi --add-dir=../other'
 allow 'claude -p "summarise the settings reference"'
 allow 'code --settings-file x'
 allow 'claude --version; echo --settings'
+# ccmux hands everything after its project to claude: the same flags, after
+# a <customer>/<repo>, a path or nothing (2026-10-24: these all passed).
+block 'ccmux cust/repo --bare'
+block 'ccmux cust/repo --setting-sources user'
+block 'ccmux cust/repo --dangerously-skip-permissions'
+block 'ccmux cust/repo --plugin-dir x'
+block 'ccmux cust/repo -p hi --settings=/tmp/loose.json'
+block 'ccmux ~/code/git/cust/repo --permission-mode bypassPermissions'
+block 'ccmux --add-dir /tmp/x'
+block 'ccmux -n cust/repo --bare'
+block "ccmux cust/repo '--bare'"
+block 'bash -c "ccmux cust/repo --bare"'
+block 'cd /tmp && env X=1 ccmux cust/repo --setting-sources=user'
+block 'nix run .#ccmux -- cust/repo --bare'
+block '/nix/store/x-ccmux/bin/ccmux cust/repo --bare'
+# A separator inside quotes or escaped does not end the arguments.
+block 'ccmux cust/repo -p "fix a; then b" --bare'
+block 'claude -p "a && b" --dangerously-skip-permissions'
+block 'claude -p a\; b --settings x.json'
+block 'ccmux cust/repo -p hi 2>&1 --bare'
+block 'claude -p hi &>/dev/null --settings x.json'
+allow 'claude -p hi 2>&1 | head; echo --bare'
+allow 'ccmux cust/repo --worktree'
+allow 'ccmux cust/repo -p "hi"'
+allow 'ccmux'
+allow 'ccmux -n cust/repo'
+allow 'ccmux cust/repo; echo --bare'
+allow 'grep -rn "claude|--settings" .'
 # Backslashes: an in-word escape and a line continuation both normalise away.
 block 'git pu\sh origin main'
 block $'git \\\npush origin main'
@@ -322,6 +353,9 @@ run 2 "$(edit_file "$HOME/.bashrc")"
 # Sessions outside the roots keep their launch flags and settings.local.json.
 allow 'claude --dangerously-skip-permissions -p hi'
 allow 'claude --settings /tmp/mine.json -p hi'
+# ccmux only launches into the code root: its flags count everywhere.
+block 'ccmux acme/infra --bare'
+allow 'ccmux acme/infra --worktree'
 run 0 "{\"hook_event_name\":\"ConfigChange\",\"source\":\"local_settings\",\"cwd\":\"$OUT\"}"
 run 2 "{\"hook_event_name\":\"ConfigChange\",\"source\":\"user_settings\",\"cwd\":\"$OUT\"}"
 # A session outside the roots that reaches into a repo under them.
@@ -333,6 +367,110 @@ run 2 "$(edit_file "$IN/.envrc")"
 run 2 "$(edit_file "/x/..$IN/devenv.nix")"
 # Unknown cwd fails closed.
 run 2 '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"git push"}}'
+cwd="$IN"
+fi
+
+# --- The command center: other repos' setup files open, its own closed ----
+# (docs/command-center.md). Every case above ran from inside the checkout.
+if [ -n "$CENTER" ]; then
+cwd="$CENTER"; other="${CENTER%/*/*}/acme/infra"
+# Its own root, under any spelling, stays a work repo's.
+run 2 "$(edit_file "$CENTER/devenv.nix")"
+run 2 "$(edit_file "$CENTER/devenv.yaml")"
+run 2 "$(edit_file "$CENTER/devenv.lock")"
+run 2 "$(edit_file "$CENTER/.envrc")"
+run 2 "$(edit_file "$CENTER/devenv/devenv.nix")"
+run 2 "$(edit_file "$CENTER/.claude/settings.local.json")"
+run 2 "$(edit_file "$CENTER/.claude/hooks/x.sh")"
+run 2 "$(edit_file "$CENTER/.claude/skills/x/SKILL.md")"
+run 2 "$(edit_file "${CENTER^^}/devenv.nix")"
+run 2 "$(edit_file "$other/../../bilibo/claude-nix-harness/devenv.nix")"
+# Every repo: the files that turn its rules off unseen, credentials, git's
+# exec vectors, plugin manifests, your own config.
+run 2 "$(edit_file "$other/.claude/settings.json")"
+run 2 "$(edit_file "$other/.claude/settings.local.json")"
+run 2 "$(edit_file "$other/devenv.local.nix")"
+run 2 "$(edit_file "$other/devenv.local.yaml")"
+run 2 "$(edit_file "$other/.env")"
+run 2 "$(edit_file "$other/terraform.tfvars")"
+run 2 "$(edit_file "$other/.git/hooks/pre-commit")"
+run 2 "$(edit_file "$other/.git/config")"
+run 2 "$(edit_file "$other/.claude/skills/x/.claude-plugin/plugin.json")"
+run 2 "$(edit_file "$HOME/.claude/skills/x/SKILL.md")"
+# Other repos' setup files: open to the Edit and Write tools.
+run 0 "$(edit_file "$other/devenv.nix")"
+run 0 "$(edit_file "$other/devenv.yaml")"
+run 0 "$(edit_file "$other/devenv.lock")"
+run 0 "$(edit_file "$other/.envrc")"
+run 0 "$(edit_file "$other/.claude/skills/x/SKILL.md")"
+run 0 "$(edit_file "$other/.claude/hooks/x.sh")"
+run 0 "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Write\",\"cwd\":\"$CENTER\",\"tool_input\":{\"file_path\":\"$other/.envrc\",\"content\":\"use devenv\"}}"
+# A link from elsewhere into the root is the root; an unknown cwd fails closed.
+ln_dir=$(mktemp -d); ln -s "$CENTER/devenv.nix" "$ln_dir/devenv.nix"
+run 2 "$(edit_file "$ln_dir/devenv.nix")"
+block "echo x >> $ln_dir/devenv.nix"
+rm -rf "$ln_dir"
+run 2 "{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$other/devenv.nix\"}}"
+# Shell writes: only one simple command naming another repo's file by an
+# absolute path. A relative name is the root's: no following `cd`.
+block 'echo x >> devenv.nix'
+block 'cd ../../acme/infra && echo x >> devenv.nix'
+block "echo x >> $CENTER/devenv.nix"
+block "echo x >> $other/../../bilibo/claude-nix-harness/devenv.nix"
+block "echo x >> \$(echo $CENTER)/devenv.nix"
+block "echo x >> \$PWD/devenv.nix"
+block "echo x >> ${CENTER%/*}/*/devenv.nix"
+block "echo x >> ${CENTER%/*/*}/{acme/infra,bilibo/claude-nix-harness}/devenv.nix"
+block 'echo x >> ~+/devenv.nix'
+block 'echo x >> /proc/self/cwd/devenv.nix'
+block "echo x >> $other/devenv.nix; echo y >> devenv.nix"
+block "echo x >> $other/devenv.nix && cp $other/devenv.nix ."
+block "echo x >> $other/devenv.nix"$'\n'"echo y >> devenv.nix"
+block "printf x | tee $other/devenv.nix"
+block "echo x >> $other/.claude/settings.json"
+block "echo x >> $other/devenv.local.nix"
+block "echo x >> $other/.git/hooks/pre-commit"
+block "rm -rf $other/.claude/"
+block "mv $other/.claude/settings.local.json /tmp/"
+block "dd if=/tmp/x of=$other/devenv.nix"
+block 'echo x >> ~/.claude/CLAUDE.md'
+block 'echo x >> ~/.claude/projects/-home-x-repo/memory/MEMORY.md'
+# A copy's destination counts too: it could carry a config file into the root.
+block "cp $other/devenv.nix ."
+block "cp $other/devenv.nix $CENTER"
+block "mv $other/.envrc $CENTER/"
+block "cp -t $CENTER $other/devenv.nix"
+block "cp -t$CENTER $other/devenv.nix"
+block "ln -sf $other/devenv.nix devenv"
+allow "echo x >> $other/devenv.nix"
+allow "echo 'use devenv' > $other/.envrc"
+allow 'echo x >> ~/code/git/acme/infra/devenv.yaml'
+allow "echo x >> $other/.claude/agents/a.md"
+allow "sed -i s/a/b/ $other/devenv.yaml"
+allow "rm $other/.envrc"
+allow "rm -rf $other/.claude/skills/old"
+allow "cp $other/devenv.nix $other/devenv.nix.bak"
+allow "mv /tmp/x/devenv.lock $other/devenv.lock"
+allow "cat $other/devenv.nix > /tmp/infra-devenv.nix"
+allow 'harness init acme/new'
+# Unchanged: git history in any repo, nested launches, the universal rules.
+block "git -C $other push"
+block "git -C $other commit -m x"
+block "cd $other && git push"
+block "bash -c 'cd $other && git reset --hard'"
+block 'ccmux acme/infra --bare'
+block "claude -p hi --settings $other/x.json"
+block 'sudo ls'
+block 'terraform apply'
+allow "git -C $other diff --cached"
+allow 'ccmux acme/infra'
+# Started from (or moved into) another repo: its files by the Edit tool, any
+# name; the shell still only by absolute path.
+cwd="$other"
+run 0 "$(edit_file devenv.nix)"
+run 2 "$(edit_file "$CENTER/devenv.nix")"
+block 'echo x >> devenv.nix'
+allow "echo x >> $other/devenv.nix"
 cwd="$IN"
 fi
 

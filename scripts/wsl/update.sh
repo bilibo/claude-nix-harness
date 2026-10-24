@@ -1,5 +1,5 @@
 #!/bin/sh
-# Pull-only update of a NixOS-WSL harness host, run as root by install-wsl.ps1
+# Pull-only update of a NixOS-WSL host, run as root by install-wsl.ps1
 # or by hand:
 #   sudo sh wsl/update.sh <output> [--switch|--no-switch]
 #

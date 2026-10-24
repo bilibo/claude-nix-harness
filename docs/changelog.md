@@ -5,6 +5,303 @@ happened and what was learned on the day.
 
 ## 2026-10-24
 
+- The command center is deliberately open (the user's decision): it is
+  where new repos are set up, and locking it down is a choice
+  (`harness.role = "work"` in its `devenv.nix`, or doing the work from a
+  locked repo). A center session may write other repos' `devenv.nix`,
+  `devenv.yaml`, `devenv.lock`, `.envrc` and `.claude/` skills, agents,
+  commands and hooks, by the Edit tool or by one shell command naming the
+  file's absolute path; such changes show in `git diff` and take effect
+  only after `direnv allow` in that repo. Its own root and the module
+  source stay closed, and so does every repo's `.claude/settings*.json`
+  and `devenv.local.*`, which switch rules off without either. Git
+  history, launch-flag, sudo, credential, cloud and memory rules are
+  unchanged. `hooks/center-guard.sh` is spliced into the center's hook
+  only (`lib/hooks.nix`, `substitute --replace-fail`, so a moved splice
+  point fails the build), and the center's deny rules name its root as
+  `//<root>/…`. Learned: a work hook that merely carried an empty
+  `CENTER_ROOT` would have moved every work repo's hook and settings
+  store path, so the center's code lives outside `env-guard.sh` and the
+  work role is proven unchanged by store path. Where a shell command
+  writes cannot be read from its text: `cd`, `-C`, a `$(…)` with a space
+  in it, a glob or brace, `~+`, `/proc/self/cwd`, or a copy's destination
+  directory all hide it. Checking only the config-file word would have let
+  `cp <other>/devenv.nix .` and `echo x > $(echo <root>)/devenv.nix`
+  through, so only one simple command with absolute paths is relaxed, and
+  `cd` is not followed. hook-test-center: 362 cases, 19 of which today's
+  hook refuses (exactly the newly allowed ones). Left, in both roles: the
+  shell rule does not recognise `.claude` without a trailing slash (`rm
+  -rf <repo>/.claude` passes), and hard links are not detected; in a work
+  repo the sandbox holds, in the center the prompt does.
+- The plain WSL host gets tmux and no `claude` (the user's decision),
+  staged. Claude Code there is the VS Code extension on Windows, whose
+  bundled binary runs inside WSL over Remote-WSL; work repos bring a CLI
+  `claude` (and tmux) for tmux/`ccmux` sessions through
+  `harness.claudeCode.enable`. `examples/nixos-wsl-plain.nix` and the
+  nixos-wsl host add `tmux` to `environment.systemPackages`, with a comment
+  saying why `claude` is absent; `scripts/wsl/verify.sh` judges `tmux on
+  PATH` on a plain host and keeps `claude` as info, naming the extension
+  and `harness.claudeCode.enable`; nixos-wsl's `check-access.sh` does the
+  same (23 checks plain, 25 managed); `install-wsl.ps1`'s Done message
+  says where Claude Code comes from. Both nixos-wsl outputs dry-run, with
+  tmux-3.8 and no claude-code in systemPackages. `harness init` looks for
+  `claude` on the host PATH, skipping Nix-store directories (a repo
+  shell's) and `~/.vscode-server`; with none it writes `claudeCode.enable =
+  true;` uncommented and `allow_unfree: true` in devenv.yaml, with one it
+  leaves both commented out, and its report's `claude` line says which.
+  `harness doctor` reports a missing host claude as an `info` line,
+  counted nowhere, instead of MISSING, and a missing tmux as a warning,
+  since ccmux carries its own tmux; an old host claude is still MISSING.
+  `ccmux` takes claude from PATH by absolute path, else runs `direnv exec
+  <repo> claude` in the window, and with neither exits 69 naming
+  `harness.claudeCode.enable`; `-n` prints a third line, `claude=<path>
+  (<source>)`. `harness check` runs its sessions with the `claude` a
+  terminal in the repo gets, by absolute path: this shell's own when it is
+  the repo's; else `direnv exec <repo>`'s, the repo shell's or the host's
+  beneath it, never another shell's; else a host `claude` outside the Nix
+  store. With none it exits 69 naming `harness.claudeCode.enable`, before
+  any session; the header and `--dry-run` print a `claude:` line.
+  harness-init-test 55 to 68, harness-doctor-test 29 to 38, ccmux-test 37
+  to 45, check-parser-test 151 to 168. Learned: the extension's bundled `claude` is a
+  dynamically linked glibc ELF, so on NixOS it runs only through
+  `programs.nix-ld`, which both host files keep; a `claude` on PATH inside
+  a repo shell is that shell's, not the host's, so init run from the
+  center's shell would otherwise have left a work repo without its CLI;
+  and tmux takes a new window's PATH from the client that runs
+  `new-window` or `new-session`, even from inside tmux, and the rest of
+  its environment from the server's global one (tmux 3.7c), so ccmux
+  passes the absolute path and the window runs exactly what `-n` reports.
+- `ccmux` carries the role, and hook rule 6 covers `ccmux`, staged. A
+  window `ccmux` opens in the shell's own project (`HARNESS_PROJECT`) is
+  named after `HARNESS_ROLE` and exports it. A window in any other
+  project is named `claude` and runs `unset HARNESS_ROLE` first, so a
+  work session launched from the center never reads `center` and its
+  repo's shell sets `work`. ccmux also drops the variable from its tmux
+  client, and `pkgs/tmux.conf` adds `set-environment -gu HARNESS_ROLE`
+  next to the project variables (`host-config-test` checks it), so a
+  server it starts has none globally and a window opened by hand from a
+  center shell carries none either. `ccmux -n` prints a second line,
+  `role=<role|unset> window=<name>`. Rule 6 now matches `ccmux` as well
+  as `claude`, and for `ccmux` outside the enforcement roots too, since it
+  only launches into the code root. Until today `ccmux <c>/<r>` with
+  `--bare`, `--setting-sources user`, `--settings`, `--permission-mode`,
+  `--dangerously-skip-permissions` or `--add-dir` passed (`--plugin-dir`
+  was already refused by rule 5). hook-test 252 to 277, hook-test-scoped
+  279 to 306, hook-test-worktree 271 to 296, ccmux-test 25 to 37 (five
+  live, on a private tmux server); the new cases fail on the old hook and
+  the old ccmux. Learned: tmux gives a new window the server's global
+  environment, which belongs to whichever client started the server, not
+  to the launching shell. With the old ccmux, on a server a center shell
+  had started, even a work repo's own `ccmux` opened a window with
+  `HARNESS_ROLE=center`, so the window now sets or clears the role
+  itself. And rule 6 had a hole for `claude` too: the normaliser strips
+  quotes before the rule stops arguments at `;`, `&` or `|`, so `claude
+  -p "a; b" --bare`, `claude -p a\; b --settings x.json` and `claude -p
+  hi 2>&1 --bare` passed. The rule now reads a copy of the command with
+  separators inside quotes, after a backslash and in `2>&1`/`&>` turned
+  into `_`, which can only add matches; one extra `jq` per Bash call, and
+  a `jq` failure denies the command. Left: an unquoted `$(a; b)` between
+  the launcher and the flag, and a renamed binary; the text rule is a
+  tripwire, not a boundary.
+- The command center gets its own shell (the user's decision, 2026-10-24
+  afternoon; it replaces the morning's assumption that the center keeps
+  the sandbox). New devenv option `harness.role`. `work` (the default) is
+  today's file. `center`, set in this checkout's `devenv.nix`, writes the
+  same deny rules and hook with `sandbox.enabled = false` and only the
+  credential list under it: no network allowlist, no filesystem
+  confinement, `/mnt/c` readable, and every Bash command goes through
+  Claude Code's permission prompt. The owner's
+  `harness.settings.permissions.allow = [ "Bash(*)" ]` quiets the prompts;
+  deny rules and the hook still win. Memory and `claudeCode.enable`
+  default on there, `readFence` is ignored, the shell adds nixfmt, statix,
+  deadnix and shellcheck, and `HARNESS_ROLE` is exported. `ccmux` names
+  the window after the role and starts a window into another project with
+  `HARNESS_ROLE` unset, so a work session launched from the center never
+  reads `center`. The checkout's `devenv.yaml` imports `harness/devenv`
+  pinned from `github:bilibo/claude-nix-harness` instead of `./devenv`: an
+  agent's working-tree edit to `hooks/` or `lib/` no longer becomes its
+  live hook at the next shell entry, and the rules move when the human
+  runs `devenv update harness`. Hook rule 6 now refuses `ccmux` with the
+  nested-`claude` launch flags (`--bare`, `--setting-sources`,
+  `--settings`, `--permission-mode`, `--add-dir`, ...) everywhere, and
+  reads quoted separators as text. The module and root-file changes are
+  patches for the human (`module.patch`, which contains the off switch,
+  and `center.patch`, which replaces `cc.patch`; both next to the repos
+  under `~/code/git/bilibo/`), because the hook refuses `devenv.nix`,
+  `devenv.yaml` and `devenv/devenv.nix` to a session.
+  `docs/command-center.md` is rewritten; `docs/sessions.md` section 3 and
+  handoff phase 2 say the tier is realised as the role.
+  `project-settings-center-test` (15 checks) and the center cases in
+  `devenv-module-eval` are new; with `role = "work"` the generated file
+  and both managed trees keep their store paths, so nothing changed for a
+  work repo. Learned: turning the sandbox off removes everything it did
+  against scripts, not only the credential reads. A script in the center reads
+  `~/.ssh`, `~/.aws`, `~/.azure` and the gh and git tokens, reaches any
+  host, and writes wherever the user can: `~/.bashrc`, `~/.config`, the
+  user-scope `~/.claude/settings.json` that holds the work repos'
+  strict-allowlist key, and any repo's git config via `git config
+  core.hooksPath`. The hook only sees command text, and `gh pr merge` or
+  `gh api` are not git commands. The Bash prompt is the one layer left,
+  and `Bash(*)` removes it. Whether `sandbox.credentials` still strips the
+  secret variables with the sandbox off is unverified. `devenv update`
+  passes every rule, so a session can move a lock (only to what the input
+  URL serves). On a managed host the managed `sandbox.enabled = true`
+  wins, so `center` turns nothing off there. The tmux-socket hole (roadmap
+  2.8) no longer concerns the center, but the center's pane is one a work
+  session can type into.
+- The `harness` CLI knows the role. `harness check` reads the repo's
+  `.claude/settings.json`: with `.sandbox.enabled` not true and the repo's
+  `HARNESS_ROLE` = `center` (this shell's when it is that repo's, else
+  `direnv exec`), the cases only the sandbox holds (1 sandbox, 8
+  ssh-agent, 9 home-write, 11 repo-write, 12 env-deny, 14 cred-sandbox, 15
+  git-hookspath; 13 read-fence when fenced) print `skip  <case> sandbox
+  off (role center): <why>` and start no session, and no fake
+  `~/.git-credentials` is written; the hook and deny-rule cases run as in
+  a work repo, seven sessions instead of fourteen. The summary reads `N
+  passed, M failed, K skipped`. A repo whose file has the sandbox off but
+  whose role is not center gets a warning and every case, so a work repo
+  that lost its sandbox fails instead of skipping. `harness init` writes
+  `# role = "center";` commented out under `# enable = false;`, marked as
+  the harness checkout's only. It prints the role the shell exports. For
+  `center` (the harness checkout, which `scripts/install.sh` initializes)
+  it runs the settings test in its center mode, and warns without
+  stopping when the repo has no `devenv/devenv.nix` and `lib/settings.nix`
+  of its own. Its `ccmux -n` note joins ccmux's new role/window line with
+  `; `. `harness doctor` is unchanged: its repo checks do not depend on
+  the role. `check-parser-test` grows from 9 to 151 assertions (dry runs
+  on fake repos per sandbox state and role), `harness-init-dry-run-test`
+  from 42 to 55; `docs/project-devenv.md` has a `role` row. Learned: half the live
+  cases are held by the sandbox alone. `touch ~/.claude/...`, `mkdir
+  .claude-plugin` and `git config core.hooksPath` pass the hook (no word
+  it treats as a write, no protected path in the command text), so in the
+  center an ordinary permission prompt is the only layer there. The center
+  keeps `sandbox.credentials`, but whether it applies without the sandbox
+  is unverified, so its two cases skip rather than claim either way. The
+  hook also refuses the Write tool on any `.claude/settings.json`, even
+  under `$TMPDIR`, so `harness check` fixtures are built in the Nix build
+  sandbox, as the tests do. Not yet run live.
+- An off switch for a repo, staged: `harness.enable` in the devenv module,
+  default `true`. `false` (one line in the repo's `devenv.nix`, then
+  `direnv allow`) writes no `.claude/settings.json`, so the repo has none
+  of its deny rules, hook or sandbox, exports no `HARNESS_*` variables, and
+  prints `harness: guard rails off for this repo (harness.enable = false in
+  devenv.nix)` at every shell entry. ccmux and the `claudeCode.enable`
+  packages stay: tools, not rules. A managed host's root-owned settings
+  apply regardless. The module change, merged with the staged
+  `pkgs/claude-code.nix` swap, is one diff for the human, since the hook
+  refuses `devenv/devenv.nix` from a session. `harness init` writes the
+  line commented out, first in the `harness` block, and on a repo whose
+  shell loads without the harness (`DEVENV_ROOT` set, no `HARNESS_PROJECT`)
+  reports `off` and exits 0 instead of saying the shell did not load.
+  `harness-init-dry-run-test` grows from 35 to 42 assertions; the new
+  `devenv-module-eval` check evaluates the module under `lib.evalModules`
+  with stand-ins for devenv's options: on, it writes exactly the
+  `project-settings` fixture; off, nothing. `docs/project-devenv.md` has
+  "Turning the guard rails off (and on)". Learned: devenv 2.4's files
+  module records what it linked in `.devenv/state/files.json` and removes
+  a store symlink that drops out of `files` at the next entry, so
+  switching off needs no cleanup step (read from the source; not yet seen
+  live). And the switch opens nothing new: whoever can write `devenv.nix`
+  could already turn the sandbox and hooks off through `harness.settings`,
+  which is merged over the generated file. What keeps an agent from it is
+  the `Edit(**/devenv.nix)` deny rule and the hook's text match, not the
+  sandbox: `devenv.nix` is not among the literal `denyWrite` paths.
+- NixOS-WSL is a plain host by default (the user's decision, 2026-10-24).
+  The Windows route no longer makes the distro a managed harness host: the
+  host flake carries NixOS-WSL and the sandbox prerequisites only (user
+  namespaces, bubblewrap and socat, flakes and the devenv cache,
+  `allowUnfree`), and the harness comes afterwards as the user, `nix run
+  github:bilibo/claude-nix-harness#harness -- bootstrap`, then `harness
+  init` per work repo; guard rails hold inside those repos only. The
+  managed modules stay as the stricter opt-in (`examples/nixos-wsl-host.nix`).
+  New `examples/nixos-wsl-plain.nix`, evaluated as a NixOS-WSL system
+  against the host repo's pinned inputs; nixfmt, statix and deadnix clean.
+  `scripts/wsl/verify.sh` keys on `/etc/claude-code/managed-settings.json`:
+  on a plain host it prints "unmanaged host: managed-layer checks skipped",
+  reports direnv, devenv, ccmux and claude without judging them, and prints
+  the bootstrap command while `harness` is absent; a managed host keeps all
+  19 checks. `install-wsl.ps1` changed wording only, plus the next steps
+  at Done and `-SkipVerify` in its help. The nixos-wsl host repo dropped
+  its `harness` input (lock pruned offline), both module imports and
+  home-manager's `programs.bash.enable`, and gained a basic toolset (dig,
+  micro, vim, jq, ripgrep, ...); both outputs evaluate (`nix build
+  --dry-run`), not yet switched in. Learned: home-manager owning
+  `~/.bashrc` blocks the bootstrap on NixOS (it skips a store-symlinked rc
+  file and only prints the option), so a host that wants the harness
+  installed as the user leaves bash to the user; and the system's
+  `nixpkgs.config.allowUnfree` is read neither by the bootstrap's `nix
+  profile add` (pure flake evaluation) nor by a repo's shell (`allow_unfree`
+  in devenv.yaml), so it only matters for unfree packages in the system
+  configuration itself. Open: the bootstrap's profile is direnv, devenv,
+  ccmux and `harness`; on the plain box `claude` and `tmux` come from
+  nowhere until the native installer, `nix profile add
+  github:bilibo/claude-nix-harness#claude-code`, or a repo's
+  `harness.claudeCode.enable` provides them, and `harness doctor` says so.
+- The command center (decided 2026-10-24): the host becomes a plain box
+  with no host-wide rules, work repos keep the full set, and this
+  checkout is where a human starts the session that launches and reviews
+  the others. `docs/command-center.md`, new: starting it, what it can and
+  cannot do (file:line), the memory decision, the known gaps.
+  `allowMemoryEdits = true` was already set in the root `devenv.nix`; the
+  decision makes it the command center's alone, and the comment change
+  there is a patch for the human (the hook refuses the file from a
+  session). Checked with 41 synthetic events against this checkout's own
+  hook build (`ALLOW_MEMORY_EDITS="1"`, no roots): every `git -C <path>`,
+  `cd <path> &&`, `bash -c`, `sh -c`, `--git-dir` and `GIT_DIR=` form of
+  commit, push and reset refused; `diff --cached`, `log`, `status`
+  through `git -C` pass. Learned: a session's rules come from where it
+  starts, so the command center carries every universal, git and cloud
+  rule itself; hook rule 6 matches `claude`, not `ccmux`, so `ccmux
+  <c>/<r> --setting-sources user` or `--bare` passes; the memory
+  carve-out admits any project's memory, a work repo's included; devenv
+  tracks `hooks/` and `lib/` as inputs and `require_allowed` does not
+  cover them, so a working-tree edit there becomes this checkout's live
+  hook at the human's next shell entry, before any commit; devenv also
+  imports `devenv.local.nix` from an imported directory. And the tmux
+  socket: `allowAllUnixSockets` reaches the tmux server outside the
+  sandbox and no rule covers it; no server ran during the check, so `tmux
+  ls` from the sandbox answered `couldn't create directory
+  /run/user/1000/tmux-1000 (Read-only file system)` (the directory
+  absent): reachability inferred from the 2026-10-21 gcr measurement,
+  not observed. Roadmap 2.8 and 2.9.
+- Mods dropped, roadmap item 8 closed: the harness ships no mods. A mod is
+  a hooks module the engine loads into every session on the machine,
+  outside the Bash sandbox, and an enabled organisation mod is the one
+  kind the built-in guard lets through; the broker would have made its
+  code, build, marketplace and registration keys a surface the harness
+  defends on every host, for coordination that never relaxes a rule.
+  Removed: `mods/` (the broker's observe slice, its types and five `claude
+  plugin test` cases), `lib/mods.nix` (`mkMod`, `mkMarketplace`), the
+  `harness.mods` option, the managed tree's `plugins/` directory, the
+  `extraKnownMarketplaces.harness` and `enabledPlugins` keys,
+  `packages.managed-mods` and `packages.harness-broker`,
+  `tests/mod-validate-test.sh` and its unfree-only check. Kept, and
+  asserted on both managed trees by a rewritten `managed-tree-test` (20
+  checks) and on the module's tree by `nixos-module-eval`: the guard's
+  `allowManagedModsOnly`, `disableSideloadFlags`, `allowManagedHooksOnly`,
+  and `strictKnownMarketplaces`, now `harness.extraKnownMarketplaces`
+  alone, empty by default so no marketplace can be added.
+  `docs/sessions.md` loses the broker (section 5 is a dated note;
+  coordination stays the proposal flow and `ccmux`); the handoff's
+  platform tier keeps the `claude plugin` rule whole. The bootstrap's
+  `--no-account-sync` is now the default: `syncClaudeAiSkills` and
+  `syncClaudeAiPlugins = false` go into the user-scope
+  `~/.claude/settings.json` on every bootstrap and upgrade (recorded in
+  the receipt, removed by `reset`); `--account-sync` opts back in and
+  removes a `false` already there; `--no-account-sync` is still accepted;
+  doctor's warning names `--account-sync`; `harness-bootstrap-test` 165
+  checks. Learned: the repo file never carried any of the mod wiring (the
+  `project-settings` derivations did not change with the removal), so the
+  machinery was managed-host surface only; the managed directory in
+  `strictKnownMarketplaces` existed only to admit the harness's own
+  marketplace; with only `false` honoured for the sync keys, an opt-in
+  flag has to delete the `false`s or it does nothing on a host
+  bootstrapped since; and because `harness upgrade` hands the original
+  flags to the upgraded bootstrap, a host bootstrapped with no flag gets
+  sync off at its next upgrade. Not verified: an empty
+  `strictKnownMarketplaces` meaning "no marketplace can be added" is the
+  settings reference's reading (not re-read today: no network to the docs
+  from the session), and no managed host has loaded either tree.
 - The `LD_LIBRARY_PATH` fix, staged: `pkgs/claude-code.nix` overrides
   nixpkgs' claude-code to drop `--prefix LD_LIBRARY_PATH` from the
   wrapper and put alsa-lib on the binary's RUNPATH instead (`patchelf

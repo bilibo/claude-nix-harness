@@ -12,7 +12,9 @@
 # where AppArmor confines user namespaces, the sysctl where an older kernel
 # does; never dnf, which is scripts/install.sh's), the user files per
 # rc-file layout (none, Fedora's ~/.bashrc.d, a plain ~/.bashrc, zsh only,
-# an existing ~/.tmux.conf, a foreign direnv.toml), idempotent re-runs, the
+# an existing ~/.tmux.conf, a foreign direnv.toml), the user-scope Claude
+# Code keys (account sync off by default, --account-sync opting back in,
+# --no-account-sync still accepted), idempotent re-runs, the
 # receipt, reset undoing all of it, upgrade building before it removes and
 # handing the user steps to the upgraded harness, reset doing nothing without
 # a receipt, the store-symlink guard on nix.conf, a NixOS host (no root step,
@@ -124,6 +126,9 @@ absent "no ~/.tmux.conf made up" "$h/.tmux.conf"
 file_has "environment.d" "$h/.config/environment.d/50-claude-nix-harness.conf" '^PATH='
 in_json "strict allowlist" "$h/.claude/settings.json" '.sandbox.network.strictAllowlist == true'
 in_json "scrub key removed, the user's key kept" "$h/.claude/settings.json" '.env == null and .theme == "dark"'
+in_json "account sync off by default" "$h/.claude/settings.json" '.syncClaudeAiSkills == false and .syncClaudeAiPlugins == false'
+in_json "account sync keys recorded" "$receipt" '[.files[] | select(.path | endswith("/.claude/settings.json")) | .keys[]] | any(. == ["syncClaudeAiSkills"]) and any(. == ["syncClaudeAiPlugins"])'
+says "doctor sees account sync off" 'ok    account-synced skills and plugins off in '
 in_json "receipt steps" "$receipt" '.root.steps | index("apparmor") and index("nix.conf") and index("nix-installer") and (index("sysctl") | not)'
 in_json "bashrc recorded as a block" "$receipt" '[.files[] | select(.path | endswith("/.bashrc")) | .kind] == ["block"]'
 in_json "profile recorded" "$receipt" '(.profile | sort) == ["ccmux","devenv","direnv","harness"]'
@@ -246,7 +251,7 @@ absent "bashrc.d file removed" "$h/.bashrc.d/claude-nix-harness.sh"
 absent "direnv.toml removed" "$h/.config/direnv/direnv.toml"
 absent "tmux.conf removed" "$h/.config/tmux/tmux.conf"
 absent "environment.d removed" "$h/.config/environment.d/50-claude-nix-harness.conf"
-in_json "user settings keys stripped" "$h/.claude/settings.json" '.sandbox == null and .env == null'
+in_json "user settings keys stripped" "$h/.claude/settings.json" '.sandbox == null and .env == null and (has("syncClaudeAiSkills") or has("syncClaudeAiPlugins") | not) and .theme == "dark"'
 absent "receipt removed" "$receipt"
 rm -f "$tmp/restricted"
 
@@ -347,6 +352,31 @@ says "plan names the sysctl"       "root:  $tmp/etc/99-userns.conf, and the kern
 called "clone restriction back"    '^sudo sysctl -w kernel.unprivileged_userns_clone=0$'
 called "clone drop-in removed"     "^sudo rm -f $tmp/etc/99-userns.conf$"
 rm -f "$tmp/clone-restricted" "$tmp/etc/99-userns.conf"
+
+# 20. --account-sync: the two keys are not written, a `false` already there
+# (the old --no-account-sync, or the default since 2026-10-24) is removed,
+# the user's own keys kept, doctor warns; --no-account-sync is still
+# accepted and puts the default back.
+h14="$tmp/home14"; mkdir -p "$h14/.claude"; cs14="$h14/.claude/settings.json"
+harness "$h14" bootstrap --yes --account-sync
+refutes "--account-sync accepted"  'unknown argument'
+in_json "--account-sync writes neither key" "$cs14" '(has("syncClaudeAiSkills") or has("syncClaudeAiPlugins") | not) and .sandbox.network.strictAllowlist == true'
+in_json "--account-sync records neither key" "$h14/.local/state/claude-nix-harness/receipt.json" '[.files[] | select(.path | endswith("/.claude/settings.json")) | .keys[]] == [["sandbox","network","strictAllowlist"]]'
+says "doctor warns with sync on"   'warn  account-synced skills and plugins load .*unless run with --account-sync'
+echo '{"theme":"dark","syncClaudeAiSkills":false,"syncClaudeAiPlugins":false}' >"$cs14"
+harness "$h14" bootstrap --yes --account-sync
+says "the falses removed"          "remove syncClaudeAiSkills and syncClaudeAiPlugins = false from $cs14 \(--account-sync\)"
+in_json "sync on again, the user's key kept" "$cs14" '(has("syncClaudeAiSkills") or has("syncClaudeAiPlugins") | not) and .theme == "dark"'
+harness "$h14" bootstrap --yes --account-sync
+refutes "nothing to remove the second time" 'remove syncClaudeAiSkills'
+harness "$h14" bootstrap --yes --no-account-sync
+refutes "--no-account-sync accepted" 'unknown argument'
+in_json "--no-account-sync is the default" "$cs14" '.syncClaudeAiSkills == false and .syncClaudeAiPlugins == false and .theme == "dark"'
+harness "$h14" bootstrap --yes --account-sync --no-account-sync
+in_json "the last of the two flags wins" "$cs14" '.syncClaudeAiSkills == false and .syncClaudeAiPlugins == false'
+harness "$h14" bootstrap --dry-run --account-sync
+says "dry run names the removal"   'remove syncClaudeAiSkills and syncClaudeAiPlugins = false'
+in_json "dry run leaves the falses" "$cs14" '.syncClaudeAiSkills == false and .syncClaudeAiPlugins == false'
 
 echo "harness-bootstrap-test: $pass passed, $fail failed"
 [ "$fail" = 0 ]

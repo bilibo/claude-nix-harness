@@ -23,7 +23,7 @@ let
       direnvPackage
       ;
     strictAllowlist = cfg.sandboxStrictAllowlist;
-    inherit (cfg) extraKnownMarketplaces mods;
+    inherit (cfg) extraKnownMarketplaces;
   };
 in
 {
@@ -63,21 +63,13 @@ in
       default = [ ];
       example = lib.literalExpression ''[ { source = "github"; repo = "anthropics/claude-plugins-official"; } ]'';
       description = ''
-        Plugin marketplaces allowed besides the managed one. Required on a
-        machine where the user keeps their own plugins; `strictKnownMarketplaces`
-        refuses every source not listed.
-      '';
-    };
-
-    mods = lib.mkOption {
-      type = lib.types.listOf lib.types.package;
-      default = [ ];
-      example = lib.literalExpression "[ harness.packages.\${pkgs.stdenv.hostPlatform.system}.harness-broker ]";
-      description = ''
-        Mods (hooks modules built by `lib/mods.nix`) shipped in the managed
-        marketplace directory and enabled from the managed settings, so they
-        count as the organisation's under the built-in guard. Empty: nothing
-        is registered and the guard refuses every mod.
+        Plugin marketplaces a user may add, written as the managed
+        `strictKnownMarketplaces` list. Empty, the default: no marketplace
+        can be added at all. The harness ships no mods and registers no
+        marketplace of its own. A source here lets the user of a mixed host
+        add that marketplace and its plugins (their hooks run only with
+        `allowManagedHooksOnly = false`); mods stay refused by the built-in
+        guard (`allowManagedModsOnly`) whatever this lists.
       '';
     };
 
@@ -140,7 +132,7 @@ in
       type = lib.types.package;
       readOnly = true;
       default = package;
-      description = "The generated managed tree (managed-settings.json, hooks/, plugins/).";
+      description = "The generated managed tree (managed-settings.json, hooks/).";
     };
   };
 

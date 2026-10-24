@@ -15,7 +15,7 @@ Everything below is a change to `devenv.nix` or `devenv.yaml`.
 | `devenv.yaml` | Where the inputs come from (the harness, nixpkgs), plus `allow_unfree` | you, rarely; `harness init --force` rewrites it |
 | `devenv.lock` | The exact revision of every input, nixpkgs included. Commit it | nobody: `devenv update` writes it |
 | `.envrc` | Three lines that make direnv load the shell and ask before loading changes | nobody: `harness init --force` rewrites it |
-| `.claude/settings.json` | The rules Claude Code runs under, generated at every shell entry, gitignored | nobody; edits are overwritten |
+| `.claude/settings.json` | The rules Claude Code runs under, generated at every shell entry, gitignored; absent with the guard rails off (below) | nobody; edits are overwritten |
 
 A `devenv.local.nix` beside them is per developer: gitignored, imported
 by devenv on its own, for values that are not the repository's (README,
@@ -157,12 +157,66 @@ descriptions.
 
 | Option | What it does |
 |---|---|
+| `enable = false` | the guard rails off for this repo (next section) |
+| `role` | `"work"`, the default and the only value a project sets. `"center"` belongs to the harness checkout alone (the command center, `docs/command-center.md`) and turns the sandbox off there, so never in a customer repo; `harness init` warns about a repo that has it |
 | `allowMemoryEdits` | Claude keeps its auto-memory under `~/.claude/projects` |
 | `allowLocalCommits` | agents commit on their worktree branch; push stays impossible |
 | `readFence`, `extraAllowRead` | hide the rest of `$HOME` from sandboxed commands, and say what the project still reads there |
 | `allowConnectors` | the claude.ai account's connectors load in this repo's sessions |
 | `platform = "wsl"` | hide `/mnt/c` and `/run/WSL` from the sandbox; `harness init` sets it on a WSL host |
-| `claudeCode.enable` | Claude Code, tmux and jq from this shell, for a host without the home module; needs `allow_unfree: true` |
+| `claudeCode.enable` | Claude Code's CLI, tmux and jq from this shell, for `ccmux` and tmux sessions on a host with no `claude` of its own; needs `allow_unfree: true`. `harness init` turns both on when it finds no `claude` on the host's `PATH`, as on the plain WSL host, where the VS Code extension runs its own bundled copy and the repo's shell is the only CLI there is; with one there, it leaves them commented out |
+
+## Turning the guard rails off (and on)
+
+A repo that should not run under the guard rails turns them off with one
+line in `devenv.nix`. One that `harness init` wrote since 2026-10-24 has
+it, commented out, first in the `harness = { ... }` block: remove the
+`#`. In an older one, add it there:
+
+```nix
+  harness = {
+    enable = false;
+  };
+```
+
+Outside that block the same line is `harness.enable = false;`. Then
+`direnv allow` in the repo (step 3 above). From the next shell entry:
+
+- `.claude/settings.json` is gone: devenv removes the link it wrote
+  before (if one is still there after the next `cd`, delete it by hand).
+  Sessions started in the repo run under your own settings only:
+  none of the repo's deny rules, no hook, no sandbox, and Claude Code's
+  usual permission prompts.
+- Every shell entry says so: `harness: guard rails off for this repo
+  (harness.enable = false in devenv.nix)`.
+- The tools stay: `packages`, toolchains, `env.` variables, `ccmux`, and
+  Claude Code itself with `claudeCode.enable`. The other harness options
+  stay in the file and do nothing until the rails are back on.
+- `harness init` on the repo reports `off` after the first shell entry
+  and checks nothing; `harness check` says it is not a harness repo.
+
+A session that was already open may keep what it loaded: start new
+ones after the change, either way.
+
+An agent cannot flip the switch. It is a line in `devenv.nix`, and the
+deny rules and the hook refuse an agent's edits to that file (step 1
+above), as for every other line in it; one that could write the file
+could already loosen the rules through `harness.settings`, so the switch
+opens nothing new. A change to `devenv.nix` you did not make still shows
+up as `require approval` at the next `cd`.
+
+To turn them back on, delete the line (or write `enable = true;`, the
+default) and `direnv allow`. The next shell entry writes
+`.claude/settings.json` again; start new sessions.
+
+Committed, the switch applies to everyone who uses the repo. For
+yourself only, put `harness.enable = false;` in `devenv.local.nix`
+instead ("The files" above).
+
+On a managed host (the NixOS module) this only turns off the repo's own
+copy of the rules. The managed settings under `/etc/claude-code` are
+root-owned: their deny rules, hook and sandbox apply in this repo
+whatever `devenv.nix` says.
 
 ## When the shell does not load
 

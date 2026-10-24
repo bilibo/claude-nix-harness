@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#   harness bootstrap [--no-root] [--no-profile] [--trusted-user] [--no-account-sync]
+#   harness bootstrap [--no-root] [--no-profile] [--trusted-user] [--account-sync]
 #                     [--code-root <dir>] [--harness <flakeref>]
 #   harness upgrade   [the bootstrap flags]
 #   harness doctor    [--code-root <dir>]
@@ -51,10 +51,13 @@
 # some other way (the README's "your own configuration"). `doctor` changes
 # nothing and reports every prerequisite, `claude doctor`, and, run in a
 # harness repo, the repo's settings symlink, direnv approval and hooks; exit
-# 1 when one the harness needs is missing. That is the host half of the
-# runbook's verification section. --dry-run prints every step and the
-# command it would run, runs none of them and never calls sudo; --verbose
-# prints each command first.
+# 1 when one the harness needs is missing. claude and tmux are not among
+# them: no host claude is an info line (the VS Code extension brings its
+# own, a repo's harness.claudeCode.enable the CLI), no tmux a warning
+# (ccmux brings its own; attaching by hand needs one). That is the host
+# half of the runbook's verification section. --dry-run prints every step
+# and the command it would run, runs none of them and never calls sudo;
+# --verbose prints each command first.
 #
 # The harness ref (what `nix profile add` installs from): --harness, else
 # HARNESS_REF, else the receipt's, else github:bilibo/claude-nix-harness. A `path:/nix/store/...` ref warns: a
@@ -68,11 +71,15 @@
 #
 # The user-scope ~/.claude/settings.json gets the keys a repo file cannot
 # carry: sandbox.network.strictAllowlist = true (an unlisted host is refused
-# inside the sandbox instead of prompting; user-or-managed scope). With
-# --no-account-sync also syncClaudeAiSkills = false and
-# syncClaudeAiPlugins = false, so sessions load no skills or plugins from the
-# claude.ai account (the harness reviews none of them). Only `false` is
-# honoured, from user scope or above; the default leaves them alone. The
+# inside the sandbox instead of prompting; user-or-managed scope), and
+# syncClaudeAiSkills = false and syncClaudeAiPlugins = false, so sessions
+# load no skills or plugins from the claude.ai account (the harness reviews
+# none of them, and a plugin can carry hooks). Only `false` is honoured,
+# from user scope or above. --account-sync opts back in: the two keys are
+# not written, and a `false` already there is removed. Account sync off is
+# the default since 2026-10-24; --no-account-sync, which turned it off
+# before, is still accepted and names the default (the later of the two
+# flags wins). The
 # other keys of that file are kept as they are. Never
 # env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: in user scope it turns the sandbox's
 # Bash auto-allow off, so every command prompts (2026-10-22, changelog); a
@@ -93,7 +100,7 @@
 set -euo pipefail
 
 CMD="${HARNESS_CMD:-bootstrap}"   # bootstrap, upgrade, doctor or reset: pkgs/harness.nix sets it
-NO_ROOT=0; NO_PROFILE=0; TRUSTED_USER=0; NO_ACCOUNT_SYNC=0; YES=0; DRY_RUN=0; VERBOSE=0
+NO_ROOT=0; NO_PROFILE=0; TRUSTED_USER=0; ACCOUNT_SYNC=0; YES=0; DRY_RUN=0; VERBOSE=0
 CODE_ROOT="${HARNESS_CODE_ROOT:-$HOME/code/git}"
 # Run straight from a checkout (bash pkgs/harness/bootstrap.sh), the checkout is the ref.
 HARNESS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
@@ -109,7 +116,8 @@ while [ $# -gt 0 ]; do
     --no-root) NO_ROOT=1 ;;
     --no-profile) NO_PROFILE=1 ;;
     --trusted-user) TRUSTED_USER=1 ;;
-    --no-account-sync) NO_ACCOUNT_SYNC=1 ;;
+    --account-sync) ACCOUNT_SYNC=1 ;;
+    --no-account-sync) ACCOUNT_SYNC=0 ;;   # the default since 2026-10-24; kept for old command lines
     --code-root) CODE_ROOT="${2:?--code-root needs a directory}"; shift ;;
     --harness) HARNESS_REF="${2:?--harness needs a flake reference}"; HARNESS_REF_FROM=--harness; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -160,6 +168,7 @@ missing=0; nmiss=0; nwarn=0
 ok()   { printf 'ok    %s\n' "$*"; }
 miss() { printf 'MISSING %s\n' "$*"; missing=1; nmiss=$((nmiss+1)); }
 warn() { printf 'warn  %s\n' "$*"; nwarn=$((nwarn+1)); }
+info() { printf 'info  %s\n' "$*"; }   # a shape the harness supports, not a gap: counted nowhere
 step() { printf '\n==> %s\n' "$*"; }
 die()  { echo "harness $CMD: $*" >&2; exit 1; }
 ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }  # ver_ge <have> <want>
@@ -577,16 +586,24 @@ NIX_SSL_CERT_FILE=${CA_BUNDLE:-/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
   # Merged with jq so the rest of the file (theme, model, ...) stays.
   local cs="$HOME/.claude/settings.json" want keys=('["sandbox","network","strictAllowlist"]')
   want='{sandbox: {network: {strictAllowlist: true}}}'
-  if [ "$NO_ACCOUNT_SYNC" = 1 ]; then
+  if [ "$ACCOUNT_SYNC" = 0 ]; then
     want="$want + {syncClaudeAiSkills: false, syncClaudeAiPlugins: false}"
     keys+=('["syncClaudeAiSkills"]' '["syncClaudeAiPlugins"]')
   fi
-  if hm_owned "$cs"; then hm_skip "$cs" "programs.claude-code.settings (sandbox.network.strictAllowlist = true$([ "$NO_ACCOUNT_SYNC" = 1 ] && echo ", syncClaudeAiSkills and syncClaudeAiPlugins = false"))"
+  if hm_owned "$cs"; then hm_skip "$cs" "programs.claude-code.settings (sandbox.network.strictAllowlist = true$([ "$ACCOUNT_SYNC" = 0 ] && echo ", syncClaudeAiSkills and syncClaudeAiPlugins = false"))"
   elif ! jq -e --argjson w "$(jq -n "$want")" '. as $s | ($s * $w) == $s' "$cs" >/dev/null 2>&1; then
-    step "set the user-scope sandbox keys in $cs"
+    step "set the user-scope keys in $cs (strict network allowlist$([ "$ACCOUNT_SYNC" = 0 ] && echo ", account sync off"))"
     jq_edit "$cs" --argjson w "$(jq -n "$want")" '. * $w'
   fi
   record_file keys "$cs" "${keys[@]}"
+  # --account-sync: a `false` an earlier bootstrap (or anyone) wrote would
+  # keep sync off, so it goes; a key that is absent or true is left alone.
+  if [ "$ACCOUNT_SYNC" = 1 ] && ! hm_owned "$cs" \
+     && jq -e '.syncClaudeAiSkills == false or .syncClaudeAiPlugins == false' "$cs" >/dev/null 2>&1; then
+    step "remove syncClaudeAiSkills and syncClaudeAiPlugins = false from $cs (--account-sync)"
+    jq_edit "$cs" 'if .syncClaudeAiSkills == false then del(.syncClaudeAiSkills) else . end
+      | if .syncClaudeAiPlugins == false then del(.syncClaudeAiPlugins) else . end'
+  fi
   # Written by the bootstrap for a few hours on 2026-10-22: with it Claude
   # Code stops auto-allowing sandboxed Bash commands (header).
   if ! hm_owned "$cs" && jq -e '.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB' "$cs" >/dev/null 2>&1; then
@@ -828,20 +845,26 @@ report() {
     else ok "no sysctl confines unprivileged user namespaces"; fi
   fi
   if bwrap --ro-bind / / --dev /dev --proc /proc --unshare-all --die-with-parent -- /bin/true 2>/dev/null; then ok "bubblewrap works here"; else miss "bubblewrap cannot create a sandbox here"; fi
-  if command -v tmux >/dev/null 2>&1; then v=$(tmux -V | awk '{print $2}'); ver_ge "${v//[a-z]/}" "$MIN_TMUX" && ok "tmux $v" || warn "tmux $v is older than $MIN_TMUX (extended-keys)"; else miss "tmux (your distro's package, or harness.claudeCode.enable in the repo)"; fi
+  # ccmux carries its own tmux and a repo's harness.claudeCode.enable puts
+  # one in its shell, so a host without tmux still runs sessions; `tmux
+  # attach` or `tmux ls` from a plain terminal does not work there.
+  if command -v tmux >/dev/null 2>&1; then v=$(tmux -V | awk '{print $2}'); ver_ge "${v//[a-z]/}" "$MIN_TMUX" && ok "tmux $v" || warn "tmux $v is older than $MIN_TMUX (extended-keys)"
+  else warn "tmux not on the host PATH: ccmux brings its own and harness.claudeCode.enable puts one in a repo's shell; tmux attach from a plain terminal needs your distro's package"; fi
   command -v jq >/dev/null 2>&1 && ok "jq" || miss "jq (your distro's package)"
   command -v git >/dev/null 2>&1 && ok "git $(git --version | awk '{print $3}')" || miss "git (your distro's package)"
 
   if command -v claude >/dev/null 2>&1; then
     v=$(claude --version 2>/dev/null | awk '{print $1}')
     ver_ge "$v" "$MIN_CLAUDE" && ok "claude $v ($(command -v claude), autoUpdates=$(jq -r 'if has("autoUpdates") then .autoUpdates else "default" end' "$HOME/.claude.json" 2>/dev/null))" || miss "claude $v is older than $MIN_CLAUDE (onFailure: block)"
-  else miss "claude: install Claude Code first (the native installer puts it in ~/.local/bin)"; fi
+  # No host-wide claude is a supported shape (the plain WSL host): VS Code's
+  # extension runs its bundled binary, and repos bring the CLI.
+  else info "claude not on the host PATH: the VS Code extension brings its own; repos get the CLI from harness.claudeCode.enable (harness init turns it on on such a host)"; fi
   local cs="$HOME/.claude/settings.json"
   if jq -e '.sandbox.network.strictAllowlist == true' "$cs" >/dev/null 2>&1; then ok "strict network allowlist in $cs (unlisted hosts refused, not prompted)"
   else miss "sandbox.network.strictAllowlist is not true in $cs (user-or-managed scope; the repo file cannot set it)"; fi
   if jq -e '.env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB' "$cs" >/dev/null 2>&1; then miss "env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB in $cs: Claude Code stops auto-allowing sandboxed Bash commands, every command prompts (harness bootstrap removes it)"; fi
   if jq -e '.syncClaudeAiSkills == false and .syncClaudeAiPlugins == false' "$cs" >/dev/null 2>&1; then ok "account-synced skills and plugins off in $cs"
-  else warn "account-synced skills and plugins load (syncClaudeAiSkills, syncClaudeAiPlugins; --no-account-sync turns them off)"; fi
+  else warn "account-synced skills and plugins load (syncClaudeAiSkills, syncClaudeAiPlugins not false in $cs; the harness reviews none of them): harness bootstrap turns them off, unless run with --account-sync"; fi
   [ -r /etc/claude-code/managed-settings.json ] && warn "/etc/claude-code/managed-settings.json exists: this host carries managed settings, the harness assumed none" || ok "no managed settings (unmanaged host: the repo file is the whole harness)"
 
   # From inside a session `code` is on PATH but dies before printing (the

@@ -1,11 +1,12 @@
 <#
 .SYNOPSIS
-  The Windows route: provision NixOS-WSL and make it a managed harness host.
+  The Windows route: provision NixOS-WSL from your host flake.
 
 .DESCRIPTION
   Run from a checkout of claude-nix-harness on Windows 11 (Windows PowerShell 5.1
   or newer; WSL 2.4 or newer from the Store). Idempotent: every step checks before
-  it acts, so rerunning is the update path.
+  it acts, so rerunning is the update path. It sets up the system only; the harness
+  itself comes afterwards, inside the distro, as the user (Done prints the commands).
 
     1. distro      only when the distro is not registered: resolve the latest
                    NixOS-WSL release (or -Tag), download nixos.wsl into Downloads,
@@ -20,13 +21,18 @@
     3. .wslconfig  if the host configuration carries windows/wslconfig, it becomes
                    %USERPROFILE%\.wslconfig (a differing existing file is backed up).
     4. restart     wsl --shutdown, so .wslconfig and wsl.conf apply.
-    5. verify      scripts/wsl/verify.sh: user, DNS, HTTPS, Nix, the managed tree.
+    5. verify      scripts/wsl/verify.sh: user, DNS, HTTPS, Nix, the sandbox
+                   prerequisites; the managed tree only on a managed host.
 
-  The host configuration is yours (README, "Usage", the managed host): a flake
-  whose nixosConfigurations.<Output> imports NixOS-WSL, home-manager and this
-  repository's NixOS and home modules. examples/nixos-wsl-host.nix is the shape.
-  The image only bootstraps the first install; afterwards everything moves
-  through the host flake's inputs.
+  The host configuration is yours: a flake whose nixosConfigurations.<Output>
+  imports NixOS-WSL and carries the sandbox prerequisites (user namespaces,
+  bubblewrap and socat, flakes and the devenv cache); examples/nixos-wsl-plain.nix
+  is the shape. Then, inside the distro, `harness bootstrap` installs the harness
+  as the user and `harness init` sets up each work repo. The stricter option is
+  the managed layer: the flake also imports this repository's NixOS and home
+  modules (examples/nixos-wsl-host.nix; README, "Usage"). The image only
+  bootstraps the first install; afterwards everything moves through the host
+  flake's inputs.
 
 .PARAMETER HostRepo
   Git URL of the host configuration flake, or a Windows folder holding it. A folder
@@ -42,6 +48,8 @@
   WSL distribution name. Default: NixOS.
 .PARAMETER InstallDir
   Where the distribution's disk lives. Default: %USERPROFILE%\WSL\<DistroName>.
+.PARAMETER SkipVerify
+  Do not run scripts/wsl/verify.sh after the restart.
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-wsl.ps1 -HostRepo https://github.com/you/nixos-config
@@ -232,6 +240,17 @@ try {
   Step 'Done'
   Info "system:  $Output$(if ($NoSwitch) { ' (built, not activated)' })"
   Info "log:     $Log"
+  Info ''
+  Info "Next, inside the distro (wsl -d $DistroName), as your user:"
+  Info '  nix run github:bilibo/claude-nix-harness#harness -- bootstrap'
+  Info '  harness init <customer>/<repo>      # once per work repo'
+  Info 'The guard rails then apply inside those repos. Claude Code comes from its'
+  Info 'VS Code extension on Windows: open a repo over Remote-WSL and it runs its'
+  Info 'bundled binary inside the distro. For tmux sessions (ccmux) a work repo'
+  Info 'gets a CLI claude from its own shell; harness init sets that up'
+  Info '(harness.claudeCode.enable). For rules everywhere, the stricter option is'
+  Info 'the managed layer: import the harness NixOS and home modules in the host'
+  Info 'flake (examples/nixos-wsl-host.nix).'
 }
 catch {
   Write-Host "`nFAILED: $($_.Exception.Message)" -ForegroundColor Red

@@ -1,4 +1,4 @@
-# Sessions: tiers, proposals, and the broker mod
+# Sessions: tiers and proposals
 
 How several Claude Code sessions on one host work together without trusting
 each other. Written 2026-10-20 from the first live case: a session in a
@@ -47,168 +47,137 @@ view across sessions. The deny rules and the mod policy do not cover
 messaging at all; a repo cannot isolate its session from its peers, and the
 README says so under what a repo cannot enforce.
 
-## 3. Tiers (handoff phase 2)
+## 3. Tiers (handoff phase 2), realised as roles
 
-Two tiers, chosen by `ccmux` from the directory, exported as
-`HARNESS_TIER` into the tmux window:
+Planned on 2026-10-20 as two tiers, customer and platform, chosen by
+`ccmux` from the directory and exported as `HARNESS_TIER`. Realised on
+2026-10-24 as a role the repo's own devenv shell sets: `harness.role` in
+its `devenv.nix`, exported as `HARNESS_ROLE` at every shell entry and
+carried by `ccmux`, which names the tmux window after it and does not
+pass `center` on to a work session it launches. The customer tier is the
+role `work`, the platform tier the role `center`; section 5 keeps the old
+words.
 
-| Tier | Where | Rules | Role here |
+| Role | Where | Rules | Part in the flow |
 |---|---|---|---|
-| customer | under `HARNESS_CODE_ROOT` (`~/code/git/<customer>/<repo>`) | the repo's generated `.claude/settings.json`: full deny set, hook, sandbox | proposes; never applies a change the rules refused |
-| platform | a configured platform root: this checkout, `~/nixos-config` | its own generated settings (handoff phase 2); runs in a permission mode where an edit prompts | the control room: the human accepts or rejects proposals there |
+| `work` (default) | every harness repo under `HARNESS_CODE_ROOT` (`~/code/git/<customer>/<repo>`) | the repo's generated `.claude/settings.json`: full deny set, hook, sandbox with the network allowlist, memory off | proposes; never applies a change the rules refused |
+| `center` | this checkout only, which imports the harness module pinned from GitHub like a work repo | the same deny set and hook, no sandbox, every Bash command prompted unless the owner allows `Bash(*)`, memory on (`docs/command-center.md`) | the control room: the human accepts or rejects proposals there |
 
-The platform roots are host configuration (the home module's option, or
-the bootstrap's `HARNESS_PLATFORM_ROOTS`), so no session can add itself.
-The platform session is not "allowed to act for peers"; it is allowed to
-edit harness source because that is its directory, and the permission
-prompt in it is the gate. It must not run in a bypass mode; the generated
-platform settings set `disableBypassPermissionsMode` like the repo file.
+The role is the repo owner's line in `devenv.nix`, which the deny rules
+and the hook refuse to a session and `require_allowed` flags at the next
+`cd`, so no session can make its own repo a center; `harness init`
+refuses a work repo that sets `center`. The configured platform roots
+(a home module option, or a bootstrap `HARNESS_PLATFORM_ROOTS`) were
+never built: on an unmanaged host the repo file is the only rule source,
+and the line in `devenv.nix` is the whole decision, as `harness.enable =
+false` is. `~/nixos-config` has no harness shell and no role (handoff
+phase 2 has what is open). The center session is not "allowed to act for
+peers"; it may edit harness source because that is its directory, and the
+permission prompt in it is the gate. It must not run in a bypass mode;
+its generated settings set `disableBypassPermissionsMode` like a work
+repo's.
 
-The tier split also removes tonight's trigger: the customer rule for
-`*/devenv.nix` stops applying to the harness's own `devenv/devenv.nix`
-once the platform tier has its own settings.
+The roles do not remove the 2026-10-20 trigger: the hook is the same in
+both, so its rule for `*/devenv.nix` still matches the harness's own
+`devenv/devenv.nix` in the center, and a change there still comes to the
+human as a diff.
 
 ## 4. The proposal flow
 
-A proposal is a diff plus a rationale, the tier and directory it came
-from, and a timestamp. It is the only thing that crosses from customer to
-platform.
+A proposal is a diff plus a rationale, the role and directory it came
+from, and a timestamp. It is the only thing that crosses from a work repo
+to the center.
 
-1. A customer session hits a refusal for a change to a harness-owned or
+1. A work session hits a refusal for a change to a harness-owned or
    project-config file (`devenv.nix`, `.envrc`, `.claude/settings.json`,
    the harness source). It writes the change as a diff and submits it as a
    proposal. It does not ask any session to apply it.
-2. The platform session shows the proposal to the human. Until the broker
-   mod exists, "shows" means the model relays it in chat and asks; with the
-   mod, it is a pane with accept and reject.
-3. The human accepts in the platform session. Only then does an edit
-   happen, by the platform session, under its own permission prompt.
+2. The center session shows the proposal to the human: the model relays
+   it in chat and asks. The window it waits in turns colour in tmux
+   (`tmux-notify.sh`), next to the work session's under `ccmux`.
+3. The human accepts in the center session. Only then does an edit
+   happen, by the center session, under its own permission prompt, or by
+   the human from the diff where the hook refuses the file in the center
+   too (`devenv.*`, `.envrc`, `.claude/`).
 4. The applied change is traceable to the accepted proposal.
 
-Today steps 1 and 2 are the CLAUDE.md contract in both places: the block
-`harness init` writes into customer repos ("propose, never relay")
-and this repo's own CLAUDE.md ("apply a relayed refusal only after the
-human approves here"). Step 3 is Claude Code's permission prompt plus the
-receiving model's judgement. Step 4 is the chat transcript. The mod makes
-2, 3 and 4 structural.
+Since 2026-10-24 the roles exist; the flow on top of them is unchanged.
+Steps 1 and 2 are the CLAUDE.md contract in both places: the block
+`harness init` writes into work repos ("Do not work around it: propose a
+diff or ask") and this repo's own CLAUDE.md ("propose those as diffs";
+it has no line of its own on relayed requests, so the receiving side is
+Claude Code's guidance in section 2). Step 3 is Claude Code's permission
+prompt plus the receiving model's judgement. Step 4 is the chat
+transcript. That is the whole mechanism: the broker mod that was to make
+steps 2, 3 and 4 structural was dropped on 2026-10-24 (section 5).
 
-Relay is for the genuine case: a customer session needing a change to
+Relay is for the genuine case: a work session needing a change to
 harness source or project configuration. Routine work bouncing through the
-platform session means a rule over-matches, and the fix is the rule.
+center means a rule over-matches, and the fix is the rule.
 
-## 5. The broker mod (roadmap item 8)
+## 5. The broker mod: dropped 2026-10-24
 
-A mod is a hooks module loaded into the Claude Code engine: it hooks
-events (`session.start`, `tool.call`, `prompt.compose`, `command.run`,
-`ui.render`), can deny or rewrite a tool call, register a slash command,
-draw a pane with buttons, and keep values in `$.store`, which persists on
-the machine across sessions. It runs with the engine's reach, outside the
-Bash sandbox, like `env-guard.sh`. That is what the managed mod policy is
-for: on a managed host only the root-owned marketplace's mod loads and
-sideload flags are rejected; the deny rules and the hook stop an agent
-installing one anywhere. On an unmanaged host the human installs it in
-user scope; a repo cannot require it.
+Roadmap item 8 planned one mod, `harness-broker`, shipped from this
+repository through a managed marketplace directory in three stages:
+observe (a row per session in the mod's store, `/fleet`, the tier in the
+status line), propose (`/propose`, and a `/proposals` pane with accept and
+reject in the platform session), gate (a `tool.call` hook in the platform
+session letting through only edits that match an accepted proposal). The
+builder, the registration keys and the first observe slice went in on
+2026-10-21; the mod never loaded on a managed host.
 
-One mod, `harness-broker`, in this repository under `mods/`, deployed
-through the managed marketplace directory on managed hosts. Three stages,
-each shipped and boring before the next:
+Dropped on 2026-10-24, with the machinery that built and shipped it
+(changelog). A mod is a hooks module loaded into the engine of every
+session on the machine: it sees every event, can deny or rewrite any tool
+call and change the system prompt, runs with the engine's reach outside
+the Bash sandbox, and keeps a store every session shares. An enabled
+organisation mod is the one kind the built-in guard lets through, so
+shipping one makes its code, its build, the marketplace that serves it and
+the keys that enable it a trust surface the harness would have to defend
+on every host, for coordination that never relaxes a rule (section 1).
 
-**Deployment shape** (checked against the mods admin and reference pages,
-2026-10-21). Today `lib/settings.nix` lists the managed marketplace in
-`strictKnownMarketplaces` only, and that key restricts which sources a
-user may add; it registers nothing. A managed mod loads when the
-marketplace is in `extraKnownMarketplaces` by absolute path
-(`{ source = { source = "directory"; path = "<store path>/plugins"; }; }`)
-and the plugin is `true` in `enabledPlugins`; it then counts as the
-organisation's mod and runs before user mods. `prependPlugins` only orders
-mods that are already enabled, and once it is set, `sec-default@builtin`
-must be named in it or the guard stops loading; without `prependPlugins`
-the guard loads on its own whenever managed settings exist, on every login
-kind, which is what the live check in runbook section 5 sees today. The
-module change is in since 2026-10-21: `lib/settings.nix` writes
-`extraKnownMarketplaces.harness` (a `directory` source by absolute path)
-and `enabledPlugins."<mod>@harness"` when its `mods` list is non-empty,
-keeps the `harness.extraKnownMarketplaces` option feeding
-`strictKnownMarketplaces`, and sets no `prependPlugins`. `lib/mods.nix`
-has `mkMod`, which writes the manifest from Nix attributes so the checkout
-holds no `.claude-plugin` (the deny rules keep an agent out of one, and
-`harness init` refuses one under `.claude`), and `mkMarketplace`, each mod
-by relative path; `lib/managed-tree.nix` places the result at
-`$out/plugins`, and `harness.mods` on the NixOS module lists what ships
-(`packages.managed` carries nothing until it is set; `managed-mods` is the
-tree with the broker). Validation is `tests/mod-validate-test.sh` over the
-built tree rather than a check phase: claude-code is unfree in nixpkgs, so
-it is in `nix flake check` only where unfree is allowed, and an agent's
-session cannot run `claude plugin` at all. A `/nix/store` path is
-root-owned and read-only, which is the in-place local directory the docs
-ask for. On an unmanaged host the same keys go into the user-scope
-`~/.claude/settings.json`, which `harness bootstrap` already edits with
-jq; not wired. Key shapes checked against the marketplace, org and mods
-admin pages on 2026-10-21; the org page says the managed file alone
-registers the marketplace and installs the plugin at the next session's
-start. Not verified live: the first managed-host run settles that, and
-the `strictKnownMarketplaces` entry shape with it.
+What stays is the policy that refuses mods:
 
-The mod reads `HARNESS_PROJECT`, which the devenv shell exports today, and
-`HARNESS_TIER` once handoff phase 2 has `ccmux` export it; `DEVENV_ROOT` is
-the fallback when a session was started by hand. It does
-not guard `$.fs`, `$.process` or `$.env` calls: those are its own API, and
-on a managed host no other mod loads, so there is nothing to police.
+- Managed host: the built-in guard's `allowManagedModsOnly` with no
+  organisation mod enabled, so every mod is refused;
+  `strictKnownMarketplaces` empty unless `harness.extraKnownMarketplaces`
+  lists a source, so no marketplace can be added; `disableSideloadFlags`;
+  `allowManagedHooksOnly`. The managed tree has no marketplace directory.
+- Any host: the deny rules and the hook refuse `claude plugin` and the
+  plugin flags on a nested `claude`; `harness init` refuses a repo with a
+  plugin manifest under `.claude`.
+- Unmanaged host: since the same day `harness bootstrap` writes
+  `syncClaudeAiSkills` and `syncClaudeAiPlugins = false` into user scope by
+  default, so the claude.ai account's plugins and skills do not load;
+  `--account-sync` opts back in.
 
-**Stage A, observe.** `session.start` reads `HARNESS_TIER`, `HARNESS_PROJECT`
-and the cwd, writes the session's row to `$.store` (tier, project,
-directory, pane, state: working or waiting), shows the tier in the status
-line. The Notification and UserPromptSubmit events update the state the
-way `tmux-notify.sh` colours the window. `/fleet` draws a pane: one row per
-live session. `prompt.compose` adds the tier's one-paragraph contract to
-the system prompt, so the CLAUDE.md block becomes a fallback rather than the
-only carrier. Nothing in stage A changes behaviour.
-
-**Stage B, propose.** `/propose` in a customer session writes a proposal
-to `$.store`: diff, rationale, origin. `/proposals` in the platform session
-draws the queue with accept and reject buttons; a click records the
-decision with the time. The customer session sees the decision in its
-status line. Still no automatic edit anywhere.
-
-**Stage C, gate.** In the platform session a `tool.call` hook on Edit and
-Write to harness-owned paths denies unless the write matches an accepted,
-unapplied proposal (same file, same hunk), then marks it applied. Edits
-the human asks for directly in the platform session are unaffected: the
-gate applies to paths that a proposal names, and the human can always
-reject the proposal and make the change by hand. Stage C is the first
-behaviour change and needs the tier split in place first, so
-"harness-owned path in a platform session" is a defined thing.
-
-Not in the mod: deny rules, the env preamble, anything a repo must be able
-to enforce without it.
+Coordination stays the proposal flow of section 4 plus `ccmux`: the
+CLAUDE.md contract in each tier, Claude Code's own messaging between
+sessions, the platform session's permission prompt as the gate, and the
+tmux window colour as the sign that a session waits. A record of proposals
+and a structural gate have no replacement; reopening either takes a new
+dated roadmap entry.
 
 ## 6. Testing
 
-- `claude plugin validate --strict` on the built mod (`nix build
-  .#harness-broker`, then `result`; `tests/mod-validate-test.sh` runs it
-  over every mod in the built marketplace) is the contract: what the
-  module hooks and calls. Its output is checked in and diffed in CI.
-- `claude plugin test` cases per stage (`*.test.ts` under the mod's
-  directory, no session or network needed): a row appears for a started
-  session; a proposal round-trips; the gate denies an unmatched write and
-  allows a matched one.
-- The live suite (`harness check`) gains one case per stage once a
-  stage ships: with the mod loaded, a customer session's refused edit ends
-  as a proposal and not as an edit anywhere.
-- `tests/hook-test.sh` is unaffected; the mod never carries a rule.
+- The mod policy: `managed-tree-test` over both managed trees (no
+  marketplace directory, no `extraKnownMarketplaces` or `enabledPlugins`,
+  the guard option, an empty `strictKnownMarketplaces`,
+  `disableSideloadFlags`, `allowManagedHooksOnly`), `nixos-module-eval` for
+  the tree the NixOS module links, `hook-test` for the `claude plugin`
+  refusals.
+- The proposal flow is a contract between models and a human, so its test
+  is live: the live suite (`harness check`) is to gain a case where a work
+  session's refused edit ends as a proposal in chat and not as an edit
+  anywhere. The roles it waited for exist since 2026-10-24; the case does
+  not yet.
 
 ## 7. Open questions
 
-- `$.store` is per plugin, shared by every session on the machine, capped
-  at 4 MiB (reference page, 2026-10-21); the fleet rows and proposals fit,
-  diffs may not. Decide whether a proposal carries the diff or a path to
-  it under the platform root.
-- Whether a platform session can be kept out of bypass mode by its
+- Whether a center session can be kept out of bypass mode by its
   generated settings alone (`disableBypassPermissionsMode` is honoured from
   any scope; confirm it covers `--permission-mode` on the outer `claude`,
   which the hook cannot see).
-- Messages between sessions are held by permission mode; whether the
-  broker should also refuse peer messages that are not proposals, or leave
-  messaging alone as a core feature outside its scope. Leaning: leave it.
-- Remote Control: a driven session is still the local process, so tiers and
-  the gate apply; the fleet pane should show it as remote.
+- Remote Control: a driven session is still the local process, so the
+  roles apply unchanged; confirm once Remote Control can start on a
+  harness host (roadmap, Ideas).

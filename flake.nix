@@ -12,13 +12,6 @@
       ];
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
       harnessLib = pkgs: import ./lib { inherit (pkgs) lib; };
-      # The mods this repository ships, built plugin directories (lib/mods.nix).
-      mods =
-        pkgs:
-        import ./mods {
-          inherit pkgs;
-          inherit (pkgs) lib;
-        };
       managedTree =
         pkgs: args:
         import ./lib/managed-tree.nix (
@@ -47,6 +40,14 @@
             inherit pkgs direnvPackage;
             inherit (pkgs) lib;
           };
+          # The command center's hook at /repo: memory writable, its default
+          # there, and center-guard.sh spliced in.
+          centerHooks = import ./lib/hooks.nix {
+            inherit pkgs direnvPackage;
+            inherit (pkgs) lib;
+            allowMemoryEdits = true;
+            centerRoot = "/repo";
+          };
         in
         {
           # Host tools for an unmanaged host, pinned by this flake's lock:
@@ -62,12 +63,6 @@
             enforcementRoots = [ "~/code/git" ];
             strictAllowlist = false;
           };
-          # The work host once the broker mod ships: `harness.mods` set.
-          managed-mods = managedTree pkgs { mods = [ (mods pkgs).harness-broker ]; };
-          # The broker mod as a plugin directory: `claude plugin validate
-          # --strict result`, `claude plugin test result`, `claude --plugin-dir
-          # result` (mods/harness-broker/README.md).
-          inherit (mods pkgs) harness-broker;
           # What the devenv module writes into a repo, with default options;
           # `/repo` stands for the checkout path devenv passes.
           project-settings = (pkgs.formats.json { }).generate "claude-settings.json" (
@@ -91,6 +86,18 @@
             (harnessLib pkgs).projectSettings {
               hookDir = "${hooks}";
               repoRoot = "/home/acme/code/git/acme/demo";
+            }
+          );
+          # What the module writes for `harness.role = "center"` with its
+          # defaults: the sandbox off, memory writable, the setup-file rules
+          # for /repo only, the rest as above.
+          project-settings-center = (pkgs.formats.json { }).generate "claude-settings-center.json" (
+            (harnessLib pkgs).projectSettings {
+              hookDir = "${centerHooks}";
+              repoRoot = "/repo";
+              centerRoot = "/repo";
+              sandbox = false;
+              allowMemoryEdits = true;
             }
           );
           ccmux = import ./pkgs/ccmux.nix { inherit pkgs; };
@@ -148,6 +155,16 @@
             inherit (pkgs) lib;
             direnvPackage = direnvStub;
           };
+          # The command center's hook at a real-looking checkout, memory on
+          # as there: hook-test.sh runs every case from inside it, then the
+          # center's own (other repos' setup files open).
+          centerTestHooks = import ./lib/hooks.nix {
+            inherit pkgs;
+            inherit (pkgs) lib;
+            direnvPackage = p.direnv;
+            allowMemoryEdits = true;
+            centerRoot = "/home/u/code/git/bilibo/claude-nix-harness";
+          };
           # The NixOS module evaluated, never built into a system: only the
           # tree it links at /etc/claude-code is forced, and, for the
           # assertion, config.assertions, which needs no toplevel either.
@@ -169,6 +186,57 @@
           harnessAssertion = pkgs.lib.findFirst (a: pkgs.lib.hasPrefix "harness:" a.message) null (
             builtins.filter (a: !a.assertion) (nixosConfig false).assertions
           );
+          # The devenv module under lib.evalModules, not devenv: stand-ins
+          # for the devenv options it sets or reads, the checkout at /repo.
+          # The file it would write, its packages and its enterShell as JSON.
+          devenvRender =
+            name: harness:
+            let
+              c =
+                (pkgs.lib.evalModules {
+                  specialArgs = { inherit pkgs; };
+                  modules = [
+                    ./devenv/devenv.nix
+                    (
+                      { lib, ... }:
+                      {
+                        options = {
+                          name = lib.mkOption {
+                            type = lib.types.nullOr lib.types.str;
+                            default = null;
+                          };
+                          devenv.root = lib.mkOption {
+                            type = lib.types.str;
+                            default = "/repo";
+                          };
+                          files = lib.mkOption {
+                            type = lib.types.attrsOf (
+                              lib.types.submodule { options.json = lib.mkOption { type = lib.types.attrs; }; }
+                            );
+                            default = { };
+                          };
+                          packages = lib.mkOption {
+                            type = lib.types.listOf lib.types.package;
+                            default = [ ];
+                          };
+                          enterShell = lib.mkOption {
+                            type = lib.types.lines;
+                            default = "";
+                          };
+                        };
+                        config = { inherit harness; };
+                      }
+                    )
+                  ];
+                }).config;
+            in
+            pkgs.writeText "devenv-${name}.json" (
+              builtins.toJSON {
+                files = pkgs.lib.mapAttrs (_: f: f.json) c.files;
+                packages = map pkgs.lib.getName c.packages;
+                inherit (c) enterShell;
+              }
+            );
           test =
             name: script: args:
             pkgs.runCommand name
@@ -197,10 +265,14 @@
           project-settings-root-test =
             test "project-settings-root-test" ./tests/project-settings-test.sh
               "${p.project-settings-elsewhere} /home/acme/code/git/acme/demo";
+          project-settings-center-test =
+            test "project-settings-center-test" ./tests/project-settings-test.sh
+              "${p.project-settings-center} center";
           ccmux-test = test "ccmux-test" ./tests/ccmux-test.sh "${p.ccmux}/bin/ccmux";
           hook-test-worktree =
             test "hook-test-worktree" ./tests/hook-test.sh
               "${stubHooks}/env-guard.sh --direnv-stub";
+          hook-test-center = test "hook-test-center" ./tests/hook-test.sh "${centerTestHooks}/env-guard.sh";
           host-config-test =
             test "host-config-test" ./tests/host-config-test.sh
               "${./pkgs/direnv.toml} ${./pkgs/tmux.conf}";
@@ -222,13 +294,16 @@
             test "check-parser-test" ./tests/check-parser-test.sh
               "${p.harness}/bin/harness ${./tests/fixtures}";
           # The module's managed tree: the sandbox block, the hook by its
-          # stable path, the deny rules; and the user-namespace assertion.
+          # stable path, the deny rules, the mod policy with no marketplace
+          # directory; and the user-namespace assertion.
           nixos-module-eval = pkgs.runCommand "nixos-module-eval" { nativeBuildInputs = [ pkgs.jq ]; } ''
             s=${managedEtc}/managed-settings.json
             jq -e '.sandbox.enabled == true and .sandbox.failIfUnavailable == true and .sandbox.allowUnsandboxedCommands == false and .sandbox.network.strictAllowlist == true' "$s"
             jq -e '[.hooks[][].hooks[].command] | length > 0 and all(startswith("/etc/claude-code/hooks/"))' "$s"
             jq -e '.permissions.deny | index("Bash(git push)") and index("Bash(nh os switch)")' "$s"
+            jq -e '.allowManagedHooksOnly == true and .disableSideloadFlags == true and .strictKnownMarketplaces == [] and (has("enabledPlugins") or has("extraKnownMarketplaces") | not)' "$s"
             test -x ${managedEtc}/hooks/env-guard.sh
+            test ! -e ${managedEtc}/plugins
             echo "nixos-module-eval: managed tree ${managedEtc}" | tee $out
           '';
           nixos-module-assertion = pkgs.runCommand "nixos-module-assertion" { } (
@@ -237,15 +312,78 @@
             else
               "echo ${pkgs.lib.escapeShellArg harnessAssertion.message} | tee $out"
           );
-          # The managed tree's mod wiring, with and without a mod.
+          # harness.enable in a repo's devenv.nix. On (the default): the
+          # module writes exactly the project-settings file the settings tests
+          # check and exports HARNESS_PROJECT and HARNESS_ROLE=work. Off: no
+          # file, no HARNESS_* export, the notice instead, the packages kept.
+          # harness.role = "center": exactly the project-settings-center
+          # file, which is a work repo's file with memory on except for the
+          # sandbox block, the hook's store path (center-guard.sh spliced
+          # in, CENTER_ROOT the checkout) and the six setup-file rules,
+          # which name the checkout instead of every directory; memory off
+          # only when set so, readFence ignored, HARNESS_ROLE=center, the
+          # harness's own dev tools in the shell. A work repo's hook carries
+          # nothing of the center's.
+          devenv-module-eval = pkgs.runCommand "devenv-module-eval" { nativeBuildInputs = [ pkgs.jq ]; } ''
+            on=${devenvRender "on" { }}
+            off=${devenvRender "off" { enable = false; }}
+            work=${devenvRender "work" { role = "work"; }}
+            memory=${devenvRender "memory" { allowMemoryEdits = true; }}
+            center=${devenvRender "center" { role = "center"; }}
+            centerMemoryOff=${
+              devenvRender "center-memory-off" {
+                role = "center";
+                allowMemoryEdits = false;
+              }
+            }
+            centerFence=${
+              devenvRender "center-fence" {
+                role = "center";
+                readFence = true;
+              }
+            }
+            jq -e --slurpfile want ${p.project-settings} '.files | keys == [".claude/settings.json"] and .[".claude/settings.json"] == $want[0]' "$on"
+            jq -e '.enterShell | test("export HARNESS_PROJECT=") and test("export HARNESS_ROLE=work\n")' "$on"
+            jq -e --slurpfile w "$on" '. == $w[0]' "$work"
+            jq -e '.files == {}' "$off"
+            jq -e '.enterShell | test("guard rails off for this repo") and (test("HARNESS_") | not)' "$off"
+            jq -e '.packages == ["ccmux"]' "$on"
+            jq -e '.packages == ["ccmux"]' "$off"
+
+            hook() { jq -r '.files[".claude/settings.json"].hooks.PreToolUse[0].hooks[0].command' "$1"; }
+            if grep -q 'CENTER_ROOT\|center_' "$(hook "$on")"; then echo "the work hook carries the center's code" >&2; exit 1; fi
+            # The center's file against the work file with the same memory
+            # setting: equal but for the sandbox, the hook directory and the
+            # setup-file rules, `**/X` swapped for `//repo/X` and
+            # `//repo/**/X`.
+            vs_work='.files[".claude/settings.json"] as $c | $w[0].files[".claude/settings.json"] as $m
+              | ($c | del(.sandbox, .hooks, .permissions.deny)) == ($m | del(.sandbox, .hooks, .permissions.deny))
+              and [$c.hooks[][].hooks[].command | sub("^/nix/store/[^/]*/"; "")] == [$m.hooks[][].hooks[].command | sub("^/nix/store/[^/]*/"; "")]
+              and ($m.permissions.deny - $c.permissions.deny | length) == 6
+              and ($c.permissions.deny - $m.permissions.deny) == ($m.permissions.deny - $c.permissions.deny
+                | map(sub("^Edit\\(\\*\\*/"; "Edit(//repo/"), sub("^Edit\\(\\*\\*/"; "Edit(//repo/**/")))'
+
+            jq -e --slurpfile want ${p.project-settings-center} '.files | keys == [".claude/settings.json"] and .[".claude/settings.json"] == $want[0]' "$center"
+            jq -e --slurpfile w "$memory" '.files[".claude/settings.json"].sandbox == {enabled: false, credentials: $w[0].files[".claude/settings.json"].sandbox.credentials}' "$center"
+            jq -e --slurpfile w "$memory" "$vs_work" "$center"
+            jq -e '.files[".claude/settings.json"].permissions | (.deny | index("Edit(~/.claude/**)") | not) and (has("allow") | not)' "$center"
+            grep -qx 'ALLOW_MEMORY_EDITS="1"' "$(hook "$center")"
+            grep -qx 'CENTER_ROOT="/repo"' "$(hook "$center")"
+            jq -e --slurpfile w "$on" "$vs_work" "$centerMemoryOff"
+            grep -qx 'ALLOW_MEMORY_EDITS="0"' "$(hook "$centerMemoryOff")"
+            jq -e --slurpfile w "$center" '.files == $w[0].files' "$centerFence"
+            jq -e '.enterShell | test("export HARNESS_PROJECT=") and test("export HARNESS_ROLE=center\n") and (test("HARNESS_ROLE=work") | not)' "$center"
+            jq -e '.packages == ["ccmux", "claude-code", "tmux", "jq", "nixfmt", "statix", "deadnix", "ShellCheck"]' "$center"
+            echo "devenv-module-eval: enable = true writes ${p.project-settings}; enable = false writes nothing; role = center writes ${p.project-settings-center}" | tee $out
+          '';
+          # The mod policy in both trees: no mods shipped, every mod refused.
           managed-tree-test =
             test "managed-tree-test" ./tests/managed-tree-test.sh
-              "${p.managed-mods} ${p.managed} ${./mods}";
+              "${p.managed} ${p.managed-scoped}";
         }
-        # claude-code is unfree in nixpkgs: the validate and plugin-test run
-        # is a check only when the evaluator allows it (NIXPKGS_ALLOW_UNFREE=1
-        # with --impure, or allowUnfree in the nixpkgs config); otherwise run
-        # tests/mod-validate-test.sh by hand with the host's claude.
+        # claude-code is unfree in nixpkgs: its check exists only when the
+        # evaluator allows it (NIXPKGS_ALLOW_UNFREE=1 with --impure, or
+        # allowUnfree in the nixpkgs config).
         // pkgs.lib.optionalAttrs (builtins.tryEval pkgs.claude-code.outPath).success {
           # pkgs/claude-code.nix: no LD_LIBRARY_PATH in the wrapper, alsa-lib
           # as a RUNPATH, and the binary still starts.
@@ -260,19 +398,6 @@
               }
               ''
                 bash ${./tests/claude-code-test.sh} ${p.claude-code} | tee $out
-              '';
-          mod-validate-test =
-            pkgs.runCommand "mod-validate-test"
-              {
-                nativeBuildInputs = [
-                  pkgs.bash
-                  pkgs.jq
-                  pkgs.claude-code
-                ];
-              }
-              ''
-                export HOME=$TMPDIR
-                bash ${./tests/mod-validate-test.sh} ${p.managed-mods}/plugins | tee $out
               '';
         }
       );

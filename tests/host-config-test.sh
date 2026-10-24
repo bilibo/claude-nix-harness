@@ -18,5 +18,6 @@ check "no whitelist"        '! grep -qE "^\s*whitelist" "$toml"'
 check "direnv vars dropped" 'grep -q "set-environment -gu DIRENV_DIR$" "$tmux"'
 check "extended keys"       'grep -q "set -g extended-keys on" "$tmux"'
 check "project vars dropped" 'grep -q "set-environment -gu HARNESS_PROJECT_DIR$" "$tmux"'
+check "role var dropped"    'grep -q "set-environment -gu HARNESS_ROLE$" "$tmux"'
 echo "pass=$pass fail=$fail"
 [ "$fail" = 0 ]

@@ -8,12 +8,14 @@ and launcher-subcommand work is phased in `docs/handoff-tiers.md`.
 
 - NixOS module: managed settings, hook, sandbox, mod policy, directory
   scoping, per-host options.
-- home-manager module: direnv, tmux, `ccmux` (without the broker signal).
+- home-manager module: direnv, tmux, `ccmux`.
+- `harness.role` (work | center) and the pinned command-center import,
+  2026-10-24; `harness.enable` as the per-repo off switch, the same day.
 - devenv module: generated project settings, host check.
 - One settings body for the managed and the repo copy; the repo file
   carries deny rules, every hook and the sandbox, so an unmanaged host runs
   on it alone. The hook blocks `settings.local.json` changes and nested
-  `claude` launch flags.
+  `claude` and `ccmux` launch flags.
 - Tests in `nix flake check`: hook unit tests (154 cases, 180 with
   enforcement roots), the generated repo settings file (15 checks), ccmux
   resolution under both names.
@@ -32,8 +34,9 @@ and launcher-subcommand work is phased in `docs/handoff-tiers.md`.
   from the repo file, `harness.allowConnectors` per repo), 2026-10-20.
 - Sandbox hardening, the first three items of the 2026-10-20 audit
   (2026-10-21): the bootstrap writes `sandbox.network.strictAllowlist =
-  true` into the user-scope `~/.claude/settings.json` (`--no-account-sync`
-  adds `syncClaudeAiSkills` and `syncClaudeAiPlugins = false`); the repo
+  true` into the user-scope `~/.claude/settings.json` (and
+  `syncClaudeAiSkills` and `syncClaudeAiPlugins = false`, the default since
+  2026-10-24; `--account-sync` leaves them out); the repo
   file lists its own settings, hooks, skills, plugin manifest and `.git`
   hooks and config as literal `denyWrite` paths under `config.devenv.root`,
   which Linux honours; `env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB = "1"` strips
@@ -156,8 +159,9 @@ Status against it: 1 runs end to end on Fedora 44 and on Ubuntu 26.10
 check`, `ccmux`; changelog); NixOS is detected since 2026-10-23 (gap A, the
 NixOS half), WSL detection is stubbed. 2 works by convention
 (CLAUDE.md contracts and `SendMessage`, as on 2026-10-21 when three
-sessions worked the audit board); the checkout is itself under the
-customer rules (the hook refuses its `devenv.nix`) until the tier split.
+sessions worked the audit board); since 2026-10-24 the checkout has its
+own role (`center`), but its hook is a work repo's, so it still refuses
+its `devenv.nix` and the module source `devenv/devenv.nix`.
 3 works, with a guide since 2026-10-24 (gap C). 4 works by hand.
 
 The gaps, in order:
@@ -200,10 +204,18 @@ The gaps, in order:
   case pointing at the guide. Phase 3's `lang` option (handoff) shortens
   it later; the guide comes first. Since 2026-10-21 the template lists
   every harness option commented out; the guide is still to write.
-- D. **Command center as a tier**: handoff phase 2 (tiers: the checkout
-  and `~/nixos-config` as platform roots, `HARNESS_TIER` from `ccmux`),
-  then the broker's stage B (item 8: `/propose`, the `/proposals` pane).
-  No new work beyond those two; the order is phase 2 first.
+- D. **Command center as a tier**: realised 2026-10-24 as `harness.role`
+  (handoff phase 2, `docs/sessions.md` section 3). `center` is this
+  checkout: the same deny rules and hook as a work repo, no sandbox, Bash
+  prompted, memory on, `HARNESS_ROLE=center` carried by `ccmux`. `work`
+  is everywhere else. The checkout imports the module pinned from GitHub,
+  so a working-tree edit never becomes its live hook. Open: the managed
+  host, where the managed sandbox stays on in the center and limiting
+  `center` to platform roots is undecided; `~/nixos-config` as a platform
+  root without a devenv. The broker's stage B it also named (item 8) was
+  dropped on 2026-10-24; proposals stay the CLAUDE.md contract and the
+  center's permission prompt (`docs/sessions.md` section 4). What the
+  command center is and does: `docs/command-center.md`.
 
 ## Next, in order
 
@@ -334,6 +346,78 @@ The gaps, in order:
       checkout's own `.envrc` the same, by hand. `harness check`: a
       `python3` write creating one gets the next command's preamble failing
       loudly, not a silently imported file.
+   8. **The tmux socket** (2026-10-24; work it before 2.1: the one open
+      item that leaves the sandbox entirely). `allowAllUnixSockets`
+      reaches the user's tmux server, which runs outside the sandbox as
+      the user: a sandboxed `tmux send-keys`, `run-shell` or `new-window`
+      runs a command with no sandbox and no hook, or types a prompt into
+      another session's pane. The hook has no tmux rule (synthetic run
+      2026-10-24: `run-shell`, `new-window`, `capture-pane` pass). Not
+      observed live: no server ran during the check (`tmux ls` in the
+      sandbox: `couldn't create directory /run/user/1000/tmux-1000
+      (Read-only file system)`, the directory absent); under `ccmux` the
+      client takes the path from `$TMUX`, and a socket on the read-only
+      `/run/user` mount answers (the gcr case, 2026-10-21). `ccmux` from
+      a command-center session uses this path by design, and hook rule 6
+      matches `claude`, not `ccmux`: `ccmux <c>/<r> --setting-sources
+      user` or `--bare` passes and starts a session with none of the
+      repo's rules. Since 2026-10-24 the command center runs without the
+      sandbox (`harness.role = "center"`), so it has nothing to escape and
+      is out of this item's scope, and its `ccmux` launches cross no
+      sandbox boundary. The item stays open for work repos, and the
+      center's pane is among those a work session's sandboxed `tmux
+      send-keys` can type into, which matters more now that the center
+      has no sandbox. The `ccmux` flag hole is closed (2026-10-24): rule 6
+      matches `ccmux` as well as `claude` (for `ccmux` outside the
+      enforcement roots too) and reads separators inside quotes as text,
+      with hook-test cases; the tmux rule of (a) stays open, a separate
+      decision. Shapes:
+      a. Hook rule: refuse `tmux` unless the subcommand is read-only
+         (`ls`, `list-*`, `has-session`, `display-message -p`, `show-*`)
+         and the command has no `-C`, `\;` or `source-file`; an allowlist
+         because tmux takes unique prefixes (`neww`, `send`, `run`) and
+         the executing set is long (`send-keys`, `paste-buffer`,
+         `run-shell`, `new-window`, `split-window`, `new-session`,
+         `respawn-*`, `pipe-pane`, `if-shell`, `source-file`, `set-hook`,
+         `bind-key`, `display-popup`, `display-menu`, `command-prompt`,
+         `confirm-before`, `set-option default-command`). Rule 6 becomes
+         `(claude|ccmux)`. Keeps `ccmux`; text only, so a script or
+         `python` on the socket still gets through.
+      b. Private socket: `ccmux` runs tmux with `-S` under a directory the
+         repo file can `denyRead` without knowing the uid
+         (`~/.local/state/claude-nix-harness/tmux`). The real boundary.
+         Costs `ccmux` from inside a sandboxed work session (moot for the
+         center, which has no sandbox) unless that repo lists it in
+         `sandbox.excludedCommands` (unsandboxed, behind a prompt; verify
+         with `allowUnsandboxedCommands = false` and for compound
+         commands). A `claude` in the user's own tmux still
+         uses the default socket (`/tmp/tmux-<uid>`,
+         `$XDG_RUNTIME_DIR/tmux-<uid>`): needs the uid, or a glob
+         `denyRead` that holds on Linux (verify).
+      c. Claude outside tmux: `tmux-notify.sh` goes quiet (no orange
+         window), the session layout is lost, and VS Code's terminal
+         brings its own sockets into `/run/user/<uid>`
+         (`vscode-ipc-*.sock`, seen 2026-10-24). Not on its own.
+      First (a), with hook-test cases: one regex and its tests, `ccmux`
+      keeps working, and it closes the flag hole that (b) leaves. Then
+      (b) together with 2.3 (the same mechanism, a socket directory in
+      `denyRead`). `tmux-notify.sh` must keep working: it runs as a hook,
+      outside the sandbox, needs `$TMUX` and `$TMUX_PANE` in claude's
+      environment and the socket reachable from there, and only runs
+      `set-window-option -t $TMUX_PANE window-status-style` (and `-u`).
+      (a) does not touch hooks; (b) must leave `TMUX`/`TMUX_PANE` out of
+      `credentials.envVars` unless that list is shown not to reach hook
+      environments. `harness check`: from a `ccmux` session, `tmux
+      display-message -p '#S'` prints the session name today; after (a)
+      the hook refuses `tmux new-window`; after (b) the client cannot
+      connect.
+   9. **Memory carve-out to the session's own project** (2026-10-24).
+      `env-guard.sh` allows `~/.claude/projects/*/memory/*`: a command-
+      center session can write a work repo's memory (prompted, outside
+      the working directory), and that repo's next session loads it with
+      its own flag off. Restrict the case to the slug of
+      `$CLAUDE_PROJECT_DIR` (verify Claude Code's slug rule and the
+      worktree case); hook-test: another slug's `MEMORY.md` is refused.
 3. **devenv-base repo with the `azure` module**: `az` pin, Terraform with
    azurerm/azuread/alz providers, tflint, trivy, and the `AZURE_CONFIG_DIR`
    task under `.git/devenv-base/azure` shared by worktrees.
@@ -358,21 +442,32 @@ The gaps, in order:
    managed layer runs live. 2026-10-23: the module evaluates in `nix
    flake check` (`nixos-module-eval`, `nixos-module-assertion`) and
    `examples/nixos-host.nix` is the import snippet; no generation has been
-   activated anywhere.
-8. **Broker mod** (`docs/sessions.md`): one mod, three stages, each boring
-   before the next: observe (`/fleet` from `$.store`, tier in the status
-   line, tier contract in the system prompt), propose (`/propose` and a
-   `/proposals` pane with accept and reject in the platform session), gate
-   (a `tool.call` hook in the platform session that lets through only
-   accepted proposals). Deployed through the managed marketplace directory,
-   `claude plugin validate` output as the contract. Stage C needs the tier
-   split (item 2 of the handoff phases). Only after everything above is
-   boring. Groundwork in since 2026-10-21 (changelog): `lib/mods.nix`, the
-   marketplace and `enabledPlugins` wiring, `harness.mods`, and the part of
-   stage A that needs no tier (the `$.store` row, `/fleet`).
-   `tests/mod-validate-test.sh` over `managed-mods` passes (2026-10-21, by
-   hand); the first managed-host load is still to do. The tier line, stage
-   B and stage C wait as before.
+   activated anywhere. 2026-10-24: the managed layer ran live on the
+   NixOS-WSL laptop from 2026-10-23 (generation 8) and was then taken off
+   it: the Windows route's host is plain by default
+   (`examples/nixos-wsl-plain.nix`, the sandbox prerequisites and nothing
+   from the harness), the harness comes afterwards as the user, and the
+   managed base config stays as the stricter opt-in
+   (`examples/nixos-wsl-host.nix`). What remains here is the native NixOS
+   managed host, when someone wants one.
+8. **Broker mod: dropped 2026-10-24.** A mod is a hooks module the engine
+   loads into every session on the machine, outside the Bash sandbox, and
+   an enabled organisation mod is the one kind the built-in guard lets
+   through; shipping the broker would have made its code, build,
+   marketplace and registration keys a trust surface the harness defends
+   on every host, for coordination that never relaxes a rule. Removed the
+   same day: `mods/` (the observe slice), `lib/mods.nix`, `harness.mods`,
+   the managed marketplace directory with its
+   `extraKnownMarketplaces`/`enabledPlugins` wiring, `packages.managed-mods`
+   and `packages.harness-broker`, `tests/mod-validate-test.sh`. Kept: the
+   policy that refuses mods on a managed host (`allowManagedModsOnly`,
+   `strictKnownMarketplaces` empty unless `harness.extraKnownMarketplaces`
+   lists a source, `disableSideloadFlags`, `allowManagedHooksOnly`),
+   asserted by `managed-tree-test` and `nixos-module-eval`; the bootstrap
+   turns account-synced skills and plugins off by default. Coordination
+   stays the proposal flow (`docs/sessions.md` section 4) plus `ccmux`; a
+   proposal record or a structural gate comes back only through a new
+   dated entry here.
 
 ## Open questions
 
@@ -398,11 +493,11 @@ The gaps, in order:
   2026-10-23 on the NixOS laptop in this checkout: `direnv export bash`
   0.19 to 0.23 s warm, 4.5 s after a change; the hook's `check_env` adds
   36 to 41 ms per Bash call in steady state (changelog).
-- Account-synced skills on the work host: off (`syncClaudeAiSkills`,
-  `syncClaudeAiPlugins`, user or managed scope; the bootstrap's
-  `--no-account-sync` writes the `false`s) or on (the default). Today's
-  sessions load the official marketplace plugins and the claude.ai skills,
-  none of which the harness reviews.
+- Account-synced skills and plugins: decided 2026-10-24 for unmanaged
+  hosts, off by default (`harness bootstrap` writes `syncClaudeAiSkills`
+  and `syncClaudeAiPlugins = false`; `--account-sync` opts back in,
+  `--no-account-sync` is still accepted). The managed settings do not set
+  them; whether the managed host should is still open.
 - `LD_LIBRARY_PATH` inside a session carries a Nix alsa-lib path that
   neither devenv, direnv nor the harness exports (2026-10-21); the host's
   `code` loads `librt` from the Nix glibc through it and dies. Trace the
@@ -449,7 +544,8 @@ The gaps, in order:
   `harness.allowRemoteControl` option in the `allowConnectors` shape, and
   the managed file makes it final. Which scope wins when they disagree is
   not stated; assume `true` wins as for `disableBypassPermissionsMode` and
-  confirm live. Off until the broker and the verification suite exist; the
+  confirm live. Off until the verification suite exists (the broker it also
+  waited for was dropped on 2026-10-24); the
   hook's nested-launch rule does not need the flag once the key is set.
 - nix-darwin module: same `lib/`, managed settings under
   `/Library/Application Support/ClaudeCode/`, seatbelt sandbox keys; the

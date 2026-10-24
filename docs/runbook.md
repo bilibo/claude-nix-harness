@@ -31,15 +31,45 @@ for an agent.
    VS Code terminal it attaches. It resolves the project from the argument,
    else from `HARNESS_PROJECT` (exported by the devenv shell at entry), else
    from the current directory under the code root. `ccmux -n ...` prints the
-   resolution without starting anything.
-3. Several objectives at once: one `ccmux` call each. Sessions that edit files
+   resolution without starting anything. `ccmux` names the window after the
+   shell's `HARNESS_ROLE` and sets it there: `center` in the harness
+   checkout, `work` in a work repo. A window it opens in another repo, such
+   as a work repo launched from the center, is named `claude` and starts
+   without the variable; that repo's shell sets `work` before each Bash
+   command. `ccmux -n` prints it on a second line (`role=center
+   window=center`). `ccmux` takes `claude` from your PATH, else from the
+   target repo's devenv shell (`direnv exec <repo> claude`), so on a host
+   without a host-wide claude it works from any terminal for a repo with
+   `harness.claudeCode.enable`; with neither it stops with a message
+   naming that option. `ccmux -n` prints the source on a third line
+   (`claude=<path> (PATH)` or `claude=<path> (direnv exec <repo>)`).
+3. The command center. Start one session in the harness checkout (`ccmux`
+   there). Its shell has the `center` role (2026-10-24): no sandbox, so
+   every Bash command asks you first. Approve them knowing a script there
+   can read your credentials and write anywhere you can
+   (`docs/command-center.md`, section 5). Launch the others from it:
+   `ccmux <customer>/<repo> --worktree` from its Bash tool (you approve
+   the command) opens that repo's window under that repo's rules, leaves
+   `HARNESS_ROLE` to that repo's shell, and switches your client to it
+   (prefix + `L` comes back). Read a work repo's staged diff from there
+   with `git -C ~/code/git/<customer>/<repo> diff --cached`. It may write
+   the work repos' `devenv.nix`, `devenv.yaml`, `devenv.lock`, `.envrc`
+   and `.claude/` skills and hooks, by the Edit tool or one shell command
+   naming the absolute path; such a change takes effect only when you
+   `direnv allow` that repo, so read `git -C ~/code/git/<customer>/<repo>
+   diff` first. Commits and
+   pushes stay yours, from your own terminal, in every repo. The center
+   runs the harness revision its `devenv.lock` pins, not the working
+   tree: after you push a harness change, run `devenv update harness` and
+   `direnv allow` in the checkout, then restart its session.
+4. Several objectives at once: one `ccmux` call each. Sessions that edit files
    get `--worktree`; the worktree lives under `.claude/worktrees/<name>`,
    has its own `.devenv/`, and its `.envrc` is auto-allowed only if it is
    byte-identical to the main checkout's (the env hook checks).
-4. When a session waits for you, its tmux window turns orange. It clears on
+5. When a session waits for you, its tmux window turns orange. It clears on
    your next prompt. If you do not see it, the Notification hook is not
    firing; see troubleshooting.
-5. You commit and push. Agents stage (`git add`), diff and branch; the
+6. You commit and push. Agents stage (`git add`), diff and branch; the
    commit is yours. `allowLocalCommits` flips that per host if you change
    your mind.
 
@@ -84,10 +114,13 @@ or for reading what the script wrote:
    `imports: - harness/devenv`. Use a git URL pinned by `devenv.lock`; the
    `path:` form is for developing the harness itself.
 2. `devenv.nix`: project tools, and `harness.settings` for project allow
-   rules (`docs/project-devenv.md` has every kind of change). On a host without the home module (one set up by
-   `scripts/install.sh`), `harness.claudeCode.enable = true` here and
-   `allow_unfree: true` in devenv.yaml put Claude Code, tmux and jq in the
-   shell.
+   rules (`docs/project-devenv.md` has every kind of change). On a host
+   without a `claude` of its own (the plain WSL host: the VS Code extension
+   brings its own binary), `harness init` sets `harness.claudeCode.enable =
+   true` here and `allow_unfree: true` in devenv.yaml, which put Claude
+   Code's CLI, tmux and jq in the shell for `ccmux`. With a host `claude`
+   it leaves both commented out; the `claude` line of its report says which
+   way it went.
 3. `.envrc`:
    ```
    eval "$(devenv direnvrc)"
@@ -114,21 +147,44 @@ or for reading what the script wrote:
 | Host | Set |
 |---|---|
 | Managed host (NixOS, NixOS-WSL) | NixOS module `harness.enable = true;` and home module `harness.enable = true;`, nothing else; everything strict, everywhere |
-| Unmanaged host | No harness modules. Your own config provides direnv >= 2.38 (`pkgs/direnv.nix`), `devenv`, `programs.claude-code`; harness repos import `harness/devenv` and bring their own rules. Sessions outside them keep whatever your own settings allow. `scripts/install.sh` installs Nix where it is missing (Fedora 44 or newer: Fedora's `nix` and `nix-daemon` packages; any other distro: the nix-installer; NixOS: nothing, Nix is the system's) and hands over to `harness bootstrap`, which adds direnv, devenv, ccmux and `harness` from this flake (`nix profile add`), writes the home module's direnv, tmux and PATH configuration as plain files (the direnv hook for bash, and zsh where there is a `~/.zshrc`), plus the user-scope `strictAllowlist`, and offers the bwrap AppArmor profile where AppArmor confines user namespaces (Ubuntu 23.10 and later) or the sysctl where an older Debian kernel does. On NixOS (2026-10-23) nothing under `/etc` is written: `nix.conf` is the system configuration's, so the `nix.settings` block is printed when it lacks flakes or the devenv cache, and a user file that is a store symlink (home-manager's) is left alone with the option that sets it printed; `root_write` refuses any store symlink on every host. It puts the devenv cache into the root-owned `nix.conf` rather than making you a trusted Nix user: a trusted user can hand the daemon any option, and agents run as you. `--trusted-user` opts in when a project needs per-repo caches. |
+| Unmanaged host | No harness modules (NixOS-WSL from `install-wsl.ps1` is this shape since 2026-10-24). Your own config provides direnv >= 2.38 (`pkgs/direnv.nix`), `devenv`, `programs.claude-code`; harness repos import `harness/devenv` and bring their own rules. Sessions outside them keep whatever your own settings allow. `scripts/install.sh` installs Nix where it is missing (Fedora 44 or newer: Fedora's `nix` and `nix-daemon` packages; any other distro: the nix-installer; NixOS: nothing, Nix is the system's) and hands over to `harness bootstrap`, which adds direnv, devenv, ccmux and `harness` from this flake (`nix profile add`), writes the home module's direnv, tmux and PATH configuration as plain files (the direnv hook for bash, and zsh where there is a `~/.zshrc`), plus the user-scope `strictAllowlist` and `syncClaudeAiSkills`/`syncClaudeAiPlugins = false` (account-synced skills and plugins off, the default since 2026-10-24; `--account-sync` leaves them on), and offers the bwrap AppArmor profile where AppArmor confines user namespaces (Ubuntu 23.10 and later) or the sysctl where an older Debian kernel does. On NixOS (2026-10-23) nothing under `/etc` is written: `nix.conf` is the system configuration's, so the `nix.settings` block is printed when it lacks flakes or the devenv cache, and a user file that is a store symlink (home-manager's) is left alone with the option that sets it printed; `root_write` refuses any store symlink on every host. It puts the devenv cache into the root-owned `nix.conf` rather than making you a trusted Nix user: a trusted user can hand the daemon any option, and agents run as you. `--trusted-user` opts in when a project needs per-repo caches. |
 | Mixed host | NixOS module with `enforcementRoots`, `sandboxStrictAllowlist = false`, `allowManagedHooksOnly = false`, `extraKnownMarketplaces` for your own plugins, `allowMemoryEdits = true` if Claude Code should keep its auto-memory. Managed rules under the roots, your own settings elsewhere. |
 
 See `nixos/default.nix` for every option. In a repo, `devenv.nix` sets the
 same `harness.allowLocalCommits` and `harness.allowMemoryEdits` as the host
 (the hook is built from the repo's values on an unmanaged host), plus
-`harness.settings` for allow rules, `harness.extraAllowedDomains`,
+`harness.role` (`work`, the default; `center` is the harness checkout's
+only), `harness.settings` for allow rules, `harness.extraAllowedDomains`,
 `harness.extraDeny` and `harness.allowConnectors` (the claude.ai account's
 connectors, off by default: they are MCP servers outside the sandbox).
+
+`harness.enable = false;` in a repo's `devenv.nix` turns its guard rails
+off: after `direnv allow` there is no `.claude/settings.json`, every shell
+entry prints `harness: guard rails off for this repo`, and `harness init`
+reports `off` and checks nothing; the managed layer is untouched. Deleting
+the line turns them back on at the next shell entry; restart sessions
+either way (`docs/project-devenv.md`).
 
 `allowMemoryEdits` is off by default on purpose: memory under
 `~/.claude/projects/<slug>/memory/` is text that every later session on the
 machine reads as context, so on a managed host it is a persistence channel for
 anything an agent picked up from a repo. With it on, only that directory
 opens; the rest of `~/.claude` stays read-only.
+
+Since 2026-10-24 the harness checkout runs as the command center,
+`harness.role = "center"` in its own `devenv.nix`: the same deny rules and
+hook as a work repo, no sandbox, Bash prompted, and `allowMemoryEdits` on
+by default. Every work repo keeps `role = "work"`, the default, and memory
+off (`docs/command-center.md`, sections 1 and 7). If the prompts are too
+many, `harness.settings.permissions.allow = [ "Bash(*)" ];` in that
+`devenv.nix` stops them; the deny rules and the hook still refuse what
+they refuse, but they match command text, so with that line nothing else
+stands between a command and your credential files or the network. The
+role is not a host setting: on a managed host the managed sandbox stays
+on in the center as well. The checkout's `devenv.yaml` imports the module
+pinned by `devenv.lock`: a change to `hooks/` or `lib/` reaches the
+center after you push it, then run `devenv update harness` and `direnv
+allow` there.
 
 Changing the host side is a rebuild: `nh os switch` or `boot` and reboot.
 Changing a repo's `devenv.nix` is `direnv reload` in that repo, which
@@ -141,21 +197,43 @@ The home-manager side (`home/`) is the same on every managed host: direnv
 config, tmux rules, `ccmux`, `programs.claude-code`. It never carries deny
 rules.
 
-Windows (2026-10-23): from a checkout of this repo on Windows 11,
+Windows (2026-10-24): from a checkout of this repo on Windows 11,
 `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-wsl.ps1
 -HostRepo <your nixos-config>` installs NixOS-WSL (the latest release,
 checksum verified), puts your flake at `/etc/nixos` as a git checkout owned
 by the default user and switches to `nixosConfigurations.<name>` (`-Output`,
-default `nixos-wsl`). `examples/nixos-wsl-host.nix` is the host file; your
-flake imports NixOS-WSL, home-manager and both harness modules. Running the
-script again is the update: `git pull --ff-only` and switch, never a commit
-on the box, and a dirty `/etc/nixos` stops it. `-NoSwitch` builds and prints
-the two activation commands for a host where you switch by hand. The
+default `nixos-wsl`). The host is plain: `examples/nixos-wsl-plain.nix` is
+the host file, NixOS-WSL plus the four sandbox prerequisites
+(`security.allowUserNamespaces`, bubblewrap and socat, flakes and the
+devenv cache in `nix.settings`, `allowUnfree`) and no harness module. Then,
+inside the distro, as yourself:
+```
+nix run github:bilibo/claude-nix-harness#harness -- bootstrap
+# new terminal: PATH, HARNESS_CODE_ROOT and the direnv hook come from ~/.bashrc.d
+harness doctor                        # every line ok or info
+harness init <customer>/<repo>        # once per work repo
+```
+The host carries tmux but deliberately no `claude`: the VS Code extension
+on Windows runs its bundled binary inside WSL over Remote-WSL (nix-ld runs
+it), which is enough for interactive use, and for tmux and `ccmux`
+sessions a work repo brings its own CLI `claude` (and tmux) through
+`harness.claudeCode.enable`, which `harness init` writes when it finds no
+host `claude`. `harness doctor` reports the absence as an `info` line, not
+a failure; a missing tmux is a warning, since ccmux carries its own. Keep
+home-manager off `~/.bashrc` on such a host: bootstrap skips a
+store-symlinked rc file and only prints the option. Running the script
+again is the update: `git pull --ff-only` and switch, never a commit on the
+box, and a dirty `/etc/nixos` stops it. `-NoSwitch` builds and prints the
+two activation commands for a host where you switch by hand. The
 `.wslconfig` comes from the host repo's `windows/wslconfig` and applies on
 the `wsl --shutdown` the script does; after any `wsl.*` option change, run
-`wsl -t <distro>` from Windows. `scripts/wsl/verify.sh` prints what the host
-should look like afterwards. Inside the distro the same two steps are
-`sudo sh <harness checkout>/scripts/wsl/update.sh <name>`.
+`wsl -t <distro>` from Windows. `scripts/wsl/verify.sh` prints what the
+host should look like afterwards: on a plain host it skips the
+managed-layer checks with one line, checks tmux, and reports direnv,
+devenv, ccmux and claude without failing on them. Inside the distro the update is
+`sudo sh <harness checkout>/scripts/wsl/update.sh <name>`. The managed
+layer stays available: `harness reset` first, then import both harness
+modules as well (`examples/nixos-wsl-host.nix`).
 
 ## 5. Verifying after a rebuild or a Claude Code upgrade
 
@@ -179,11 +257,27 @@ harness reset                                 # sudo; asks first; reads the rece
 rm -rf ~/code/git/<customer>/<repo>           # the throwaway repo, so init starts clean
 scripts/install.sh                            # sudo: dnf, SELinux label, daemon socket; then harness bootstrap (nix.conf, profile, user files) and harness init on this checkout; the ref is this checkout
 # new terminal: PATH and NIX_SSL_CERT_FILE come from profile.d and ~/.bashrc.d
-harness doctor                                # every line ok
+harness doctor                                # every line ok or info
 harness init <customer>/<repo>                # files, two allows, the settings checks, the hook cases
 harness check ~/code/git/<customer>/<repo>    # fourteen -p sessions
 cd ~/code/git/<customer>/<repo> && ccmux            # interactive: trust dialog once, orange window when it waits
 ```
+In the command center (the harness checkout, `harness.role = "center"`)
+`harness check` runs only the seven cases the hook and deny rules hold
+(devenv-env, git-commit, cred-read, config-write, edit-envrc, nested-flags,
+hooks-registered) and prints one `skip` line, `sandbox off (role center):
+<why>`, for each case only the sandbox holds (sandbox, ssh-agent,
+home-write, repo-write, env-deny, cred-sandbox, git-hookspath; read-fence
+too in a fenced repo), ending `7 passed, 0 failed, 7 skipped`; there Claude
+Code's permission prompt is all that stands in for those seven, so read
+what you approve.
+
+`harness check` runs the `claude` a terminal in the repo would get: the
+repo shell's (`harness.claudeCode.enable`), else the host's. So it works
+from any terminal, also on a host whose only Claude Code is the VS Code
+extension's. The `claude:` line of its header, `--dry-run` included, says
+which.
+
 Log out and in once at the end so GUI-launched VS Code sees the nix profile.
 The 2026-10-20 run of this list on the Fedora laptop, with
 `raul/harness-test` as the repo, passed; the two host fixes it produced
@@ -308,9 +402,16 @@ which is the dangerous direction.
   writes to stderr). A dangling
   `.claude/settings.json` symlink (store path collected) has the same
   effect; `direnv reload` rewrites it.
-- **Plugin or marketplace refused.** `strictKnownMarketplaces` lists only
-  the managed directory plus `extraKnownMarketplaces`. Add the source on
-  that host, or accept that the plugin does not load there.
+- **Plugin or marketplace refused.** `strictKnownMarketplaces` is
+  `extraKnownMarketplaces` and nothing else: empty by default, so no
+  marketplace can be added. Add the source on that host, or accept that
+  the plugin does not load there. A mod is refused whatever the list says:
+  the harness ships none (2026-10-24) and the built-in guard lets no other
+  through.
+- **`harness: guard rails off for this repo` at every `cd`.** The repo's
+  `devenv.nix` (or `devenv.local.nix`) sets `harness.enable = false`. If
+  nobody meant to, `git log -p devenv.nix` says who did; delete the line
+  and `direnv allow`.
 - **Plugin hooks silent.** `allowManagedHooksOnly` is on. Expected on a
   managed host.
 - **`.claude/settings.json` is a dangling symlink.** The store path was
@@ -385,12 +486,19 @@ which is the dangerous direction.
   layer. What it cannot do is listed in the README ("What a repo cannot
   enforce on its own"): mod policy, launch flags of the outer `claude`,
   sessions started above the repo, the folder trust dialog, account-synced
-  skills and plugins.
+  skills and plugins (the bootstrap turns those off in user scope).
 
 Sandbox limits, checked against the sandboxing docs and live on 2026-10-20.
 The README's "Lockdown level today" table summarises them; the roadmap's
 "sandbox hardening" entry closes them in order:
 
+- The tmux server runs outside the sandbox and its socket is reachable
+  from inside (`allowAllUnixSockets`): a sandboxed `tmux send-keys`,
+  `run-shell` or `new-window` runs unsandboxed and unhooked. The command
+  center is out of its reach since it has no sandbox, but its pane is one
+  a work session can type into; since 2026-10-24 hook rule 6 refuses the
+  same launch flags after `ccmux` as after `claude`. Roadmap 2.8
+  (2026-10-24).
 - Reads are open. A sandboxed command reads the whole machine except the
   `denyRead` paths (`~/.azure`, `~/.gnupg`, `~/.terraform.d`, `~/.netrc`,
   `~/.ssh`, and since 2026-10-21 `~/.aws`, `~/.config/gh` and

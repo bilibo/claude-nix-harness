@@ -51,8 +51,9 @@ either:
   sessions driven by a shell script and judged with `jq` over
   stream-json; roadmap item 6 (the limits suite) grows the same way. As
   an SDK program: a typed stream, the transcript already parsed, one
-  process per case. Not the broker: that is a hooks module inside the
-  engine (`docs/sessions.md` section 5), not a client of it.
+  process per case. Not the broker (dropped 2026-10-24): that was a hooks
+  module inside the engine (`docs/sessions.md` section 5), not a client of
+  it.
 - **Headless agents on the managed host.** A scheduled job on the WSL
   host (a nightly `terraform plan` review, a dependency audit) is an SDK
   program under a systemd timer, as the same user, in a harness repo.

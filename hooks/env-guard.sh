@@ -285,18 +285,22 @@ ENV
         re='--plugin-(dir|url)|claude_code_plugin_dirs=|--mcp-config|--agents( |=)'
         [[ "$n" =~ $re ]] && deny "plugin sideload blocked"
 
-        # 6. nested sessions that would skip the repo's rules (project rule).
+        # 6. nested sessions that would skip the repo's rules (project rule;
+        # for `ccmux` universal: it only launches into the code root).
         # Without managed settings the repo file is the only rule source, and
         # these flags replace or bypass it for the child session (`--bare`
         # skips every hook); `--add-dir` widens the child's working
-        # directories, which the sandbox lets it write. Arguments stop at a
-        # command separator so a flag
-        # mentioned in a later command does not count. A renamed copy of the
-        # binary gets past this; the sandbox is the layer for that.
-        if [ "$in_scope" = 1 ]; then
-        re="(^|[^a-z])claude( +[^ ;&|]+)* +--(bare|setting-sources|settings|permission-mode|dangerously-skip-permissions|allow-dangerously-skip-permissions|add-dir)( |=|$)"
-        [[ "$n" =~ $re ]] && deny "claude launch flag blocked"
-        fi
+        # directories, which the sandbox lets it write. `ccmux [<project>]`
+        # hands the rest to `claude`. Arguments stop at a command separator
+        # so a flag in a later command does not count; one inside quotes or
+        # after a backslash is text (`-p "a; b" --bare`), as is the `&` of
+        # `2>&1` and `&>`, so this rule reads the command with those turned
+        # into `_`, which only adds matches. A renamed copy of the binary
+        # gets past this; the sandbox is the layer for that.
+        launcher=ccmux; [ "$in_scope" = 0 ] || launcher='claude|ccmux'
+        q=$(printf '%s' "$cmd" | jq -Rsj 'gsub("(?<q>\"(\\\\.|[^\"\\\\])*\"|\\x27[^\\x27]*\\x27|\\\\.|>&|&>)"; .q | gsub("[;&|]"; "_"))' | tr -d '\\' | tr -s '[:space:]' ' ' | tr -d "'\"")
+        re="(^|[^a-z])($launcher)( +[^ ;&|]+)* +--(bare|setting-sources|settings|permission-mode|dangerously-skip-permissions|allow-dangerously-skip-permissions|add-dir)( |=|$)"
+        [[ "${q,,}" =~ $re ]] && deny "claude launch flag blocked"
 
         # 7. the environment the command is about to run in must load
         # (universal; the env-file preamble below is fail-open on its own).
